@@ -12,9 +12,9 @@ AUDIO_SAMPLE_RATE = 44100
 # Video compression settings
 VIDEO_SCALE = "min(1920,iw):min(1080,ih)"  
 VIDEO_FPS = 24  
-VIDEO_CODEC = "libx265"  
-VIDEO_BITRATE = "100k"  
-VIDEO_CRF = 30  
+VIDEO_CODEC = "h264_nvenc"  
+VIDEO_BITRATE = "500k"  
+VIDEO_CRF = 27 
 VIDEO_PRESET = "ultrafast"  
 VIDEO_PIXEL_FORMAT = "yuv420p"  
 VIDEO_PROFILE = "main"  
