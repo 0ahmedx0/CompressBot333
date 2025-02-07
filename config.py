@@ -10,20 +10,18 @@ AUDIO_CHANNELS = 1
 AUDIO_SAMPLE_RATE = 44100  
 
 # Video compression settings
-VIDEO_SCALE = "min(1920,iw):min(1080,ih)"  
-VIDEO_FPS = 30
-VIDEO_CODEC = "h264_nvenc"  
-VIDEO_BITRATE = "1500k"  
-VIDEO_CRF = 23
-VIDEO_PRESET = "p7"  
-VIDEO_PIXEL_FORMAT = "yuv420p"  
-VIDEO_PROFILE = "high"  
-VIDEO_AUDIO_CODEC = "aac"  
-VIDEO_AUDIO_BITRATE = "128k"  
-VIDEO_AUDIO_CHANNELS = 2
-VIDEO_AUDIO_SAMPLE_RATE = 48000  
-VIDEO_SCALE = '640:360' 
-
+VIDEO_SCALE = "iw:ih"  # الحفاظ على الأبعاد الأصلية للفيديو
+VIDEO_FPS = 30  # الحفاظ على معدل الإطارات كما هو
+VIDEO_CODEC = "h264_nvenc"  # استخدام ترميز h264_nvenc لتسريع الضغط باستخدام المعالج الرسومي
+VIDEO_BITRATE = "1500k"  # تعيين معدل البت للضغط
+VIDEO_CRF = 23  # الحفاظ على قيمة CRF لتوازن جيد بين الحجم والجودة
+VIDEO_PRESET = "medium"  # استخدام إعداد "medium" للحصول على توازن بين السرعة والجودة
+VIDEO_PIXEL_FORMAT = "yuv420p"  # الحفاظ على تنسيق البيكسل المناسب
+VIDEO_PROFILE = "high"  # الحفاظ على إعدادات "high" لجودة الفيديو
+VIDEO_AUDIO_CODEC = "aac"  # استخدام ترميز الصوت aac
+VIDEO_AUDIO_BITRATE = "128k"  # تعيين معدل البت الصوتي
+VIDEO_AUDIO_CHANNELS = 2  # الحفاظ على قنوات الصوت
+VIDEO_AUDIO_SAMPLE_RATE = 48000  # الحفاظ على معدل العينة الصوتي
 # Temporary file settings
 TEMP_FILE_SUFFIX_AUDIO = ".mp3"  
 TEMP_FILE_SUFFIX_VIDEO = ".mp4"  
