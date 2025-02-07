@@ -2,50 +2,29 @@ import os
 import tempfile
 import subprocess
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-from pydub import AudioSegment
+from pyrogram.types import CallbackQuery
 from config import *
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
 
 @app.on_message(filters.command("start"))
 def start(client, message):
-    markup = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Compress Audio 🎧", callback_data="compress_audio"),
-            InlineKeyboardButton("Compress Video 🎥", callback_data="compress_video")
-        ]
-    ])
-    message.reply_text("Choose what you want to compress:", reply_markup=markup)
-
-@app.on_callback_query()
-def callback(client, callback_query: CallbackQuery):
-    callback_query.message.reply_text("Send me a file.")
-
-@app.on_message(filters.voice | filters.audio)
-def handle_audio(client, message):
-    file = client.download_media(message.voice.file_id if message.voice else message.audio.file_id)
-    audio = AudioSegment.from_file(file).set_channels(AUDIO_CHANNELS).set_frame_rate(AUDIO_SAMPLE_RATE)
-    
-    with tempfile.NamedTemporaryFile(suffix=TEMP_FILE_SUFFIX_AUDIO, delete=False) as temp_file:
-        temp_filename = temp_file.name
-    
-    audio.export(temp_filename, format=AUDIO_FORMAT, bitrate=AUDIO_BITRATE)
-    message.reply_document(temp_filename)
-    
-    os.remove(file)
-    os.remove(temp_filename)
+    message.reply_text("Send me a video and I will compress it for you.")
 
 @app.on_message(filters.video | filters.animation)
-def handle_media(client, message):
+def handle_video(client, message):
+    # تحميل الفيديو من المرسل
     file = client.download_media(message.video.file_id if message.video else message.animation.file_id)
     
+    # إنشاء ملف مؤقت لتخزين الفيديو المضغوط
     with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
         temp_filename = temp_file.name
     
+    # إذا كان الفيديو من نوع Animation نحتاج لتحويله إلى فيديو
     if message.animation:
         subprocess.run(f'ffmpeg -y -i "{file}" "{temp_filename}"', shell=True, check=True)
     
+    # ضغط الفيديو
     subprocess.run(
         f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v h264_nvenc -pix_fmt {VIDEO_PIXEL_FORMAT} '
         f'-b:v 500k -crf 28 -preset fast -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} '
@@ -54,7 +33,10 @@ def handle_media(client, message):
         shell=True, check=True
     )
     
+    # إرسال الفيديو المضغوط للمستخدم
     message.reply_video(temp_filename)
+    
+    # حذف الملفات المؤقتة بعد إرسالها
     os.remove(file)
     os.remove(temp_filename)
 
