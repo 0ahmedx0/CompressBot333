@@ -25,7 +25,7 @@ def handle_video(client, message):
         subprocess.run(f'ffmpeg -y -i "{file}" "{temp_filename}"', shell=True, check=True)
     
     # ضغط الفيديو
-   subprocess.run(
+  subprocess.run(
     f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} '
     f'-cq {VIDEO_CRF} -b:v {VIDEO_BITRATE} -preset {VIDEO_PRESET} -c:a {VIDEO_AUDIO_CODEC} '
     f'-b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} '
@@ -33,7 +33,6 @@ def handle_video(client, message):
     shell=True, check=True
 )
 
-    )
     # إرسال الفيديو المضغوط للمستخدم
     message.reply_video(temp_filename)
     
