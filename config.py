@@ -1,7 +1,10 @@
 # BOT Credentials
-API_ID = 23151406
-API_HASH = "0893a87614fae057c8efe7b85114f45a"
-API_TOKEN = "7535942426:AAEq8EiNE4PcMvTFn65k17YjPC5_d-RedDQ"
+
+from os import getenv
+import os
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+API_TOKEN = os.getenv("BOT_TOKEN")
 
 # Audio compression settings
 AUDIO_BITRATE = "32k"  
