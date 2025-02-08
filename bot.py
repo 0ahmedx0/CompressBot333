@@ -2,8 +2,10 @@ import os
 import tempfile
 import subprocess
 from pyrogram import Client, filters
-from pyrogram.types import CallbackQuery
 from config import *
+
+def progress(current, total):
+    print(f"Uploading: {current / total * 100:.1f}%")
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
 
@@ -23,17 +25,17 @@ def handle_video(client, message):
     # إذا كان الفيديو من نوع Animation نحتاج لتحويله إلى فيديو
     if message.animation:
         subprocess.run(f'ffmpeg -y -i "{file}" "{temp_filename}"', shell=True, check=True)
-    
-    # ضغط الفيديو
-     subprocess.run(
+    else:
+          subprocess.run(
         f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} '
         f'-b:v {VIDEO_BITRATE} -crf {VIDEO_CRF} -preset {VIDEO_PRESET} -c:a {VIDEO_AUDIO_CODEC} '
         f'-b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} '
         f'-profile:v {VIDEO_PROFILE} -map_metadata -1 "{temp_filename}"',
-        shell=True, check=True
+        shell=True, check=True )
 
-    # إرسال الفيديو المضغوط للمستخدم
-    message.reply_video(temp_filename)
+    
+    # إرسال الفيديو المضغوط للمستخدم كـ "document" لتسريع عملية الرفع
+    message.reply_document(temp_filename, progress=progress)
     
     # حذف الملفات المؤقتة بعد إرسالها
     os.remove(file)
