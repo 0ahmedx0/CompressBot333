@@ -4,7 +4,7 @@ from os import getenv
 import os from getenv
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
-API_TOKEN = os.getenv("BOT_TOKEN")
+API_TOKEN = os.getenv("API_TOKEN")
 
 # Audio compression settings
 AUDIO_BITRATE = "32k"  
