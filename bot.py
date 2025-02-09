@@ -76,7 +76,7 @@ def compression_choice(client, callback_query):
         except Exception as e:
             print(f"Error deleting file: {e}")
         callback_query.message.delete() # Delete the button message
-        callback_query.answer("تم إلغاء الضغط وحذف الفيديو.", show_alert=True)
+        callback_query.answer("تم إلغاء الضغط وحذف الفيديو.",show_alert=False)
         return # Stop processing further
 
     video_data = user_video_data[message_id] # Do not pop, keep data for re-compression
