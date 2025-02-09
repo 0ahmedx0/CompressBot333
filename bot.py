@@ -29,13 +29,13 @@ def handle_video(client, message):
             ]
         ]
     )
-    reply_message = message.reply_text("اختر مستوى الضغط:", reply_markup=markup, quote=True) # احصل على كائن الرسالة المرسلة التي تحتوي على الأزرار
-    user_video_data[reply_message.id] = {'file': file, 'message': message} # خزّن البيانات باستخدام معرّف رسالة الأزرار
+    reply_message = message.reply_text("اختر مستوى الضغط:", reply_markup=markup, quote=True)
+    user_video_data[reply_message.id] = {'file': file, 'message': message}
 
 
 @app.on_callback_query()
 def compression_choice(client, callback_query):
-    message_id = callback_query.message.id # استخدم message.id الخاص بـ callback_query.message مباشرة
+    message_id = callback_query.message.id
 
     if message_id not in user_video_data:
         callback_query.answer("انتهت صلاحية هذا الطلب. يرجى إرسال الفيديو مرة أخرى.", show_alert=True)
@@ -51,47 +51,35 @@ def compression_choice(client, callback_query):
         temp_filename = temp_file.name
 
     try:
+        ffmpeg_command = "" # متغير لتخزين أمر ffmpeg لطباعته لاحقًا
         if callback_query.data == "crf_27": # ضغط عالي
             if message.animation:
-                subprocess.run(f'ffmpeg -y -i "{file}" "{temp_filename}"', shell=True, check=True, capture_output=True)
+                ffmpeg_command = f'ffmpeg -y -i "{file}" "{temp_filename}"'
             else:
-                subprocess.run(
-                    f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} '
-                    f'-b:v {VIDEO_BITRATE} -crf {27} -preset {VIDEO_PRESET} -c:a {VIDEO_AUDIO_CODEC} '
-                    f'-b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} '
-                    f'-profile:v {VIDEO_PROFILE} -map_metadata -1 "{temp_filename}"',
-                    shell=True, check=True, capture_output=True
-                )
+                ffmpeg_command = f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -b:v {VIDEO_BITRATE} -crf {27} -preset {VIDEO_PRESET} -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v {VIDEO_PROFILE} -map_metadata -1 "{temp_filename}"'
         elif callback_query.data == "crf_23": # ضغط متوسط
             if message.animation:
-                subprocess.run(f'ffmpeg -y -i "{file}" "{temp_filename}"', shell=True, check=True, capture_output=True) # في حالة الانيميشن لا يتم تغيير قيمة crf
+                ffmpeg_command = f'ffmpeg -y -i "{file}" "{temp_filename}"'
             else:
-                subprocess.run(
-                    f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} '
-                    f'-b:v {VIDEO_BITRATE} -crf {23} -preset {VIDEO_PRESET} -c:a {VIDEO_AUDIO_CODEC} '
-                    f'-b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} '
-                    f'-profile:v {VIDEO_PROFILE} -map_metadata -1 "{temp_filename}"',
-                    shell=True, check=True, capture_output=True
-                )
+                ffmpeg_command = f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -b:v {VIDEO_BITRATE} -crf {23} -preset {VIDEO_PRESET} -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v {VIDEO_PROFILE} -map_metadata -1 "{temp_filename}"'
         elif callback_query.data == "crf_18": # ضغط منخفض
             if message.animation:
-                subprocess.run(f'ffmpeg -y -i "{file}" "{temp_filename}"', shell=True, check=True, capture_output=True) # في حالة الانيميشن لا يتم تغيير قيمة crf
+                ffmpeg_command = f'ffmpeg -y -i "{file}" "{temp_filename}"'
             else:
-                subprocess.run(
-                    f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} '
-                    f'-b:v {VIDEO_BITRATE} -crf {18} -preset {VIDEO_PRESET} -c:a {VIDEO_AUDIO_CODEC} '
-                    f'-b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} '
-                    f'-profile:v {VIDEO_PROFILE} -map_metadata -1 "{temp_filename}"',
-                    shell=True, check=True, capture_output=True
-                )
+                ffmpeg_command = f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -b:v {VIDEO_BITRATE} -crf {18} -preset {VIDEO_PRESET} -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v {VIDEO_PROFILE} -map_metadata -1 "{temp_filename}"'
+
+        print(f"Executing FFmpeg command: {ffmpeg_command}") # طباعة أمر FFmpeg قبل التنفيذ
+        subprocess.run(ffmpeg_command, shell=True, check=True, capture_output=True)
+        print("FFmpeg command executed successfully.") # طباعة بعد التنفيذ الناجح
 
         message.reply_document(temp_filename, progress=progress)
 
     except subprocess.CalledProcessError as e:
-        print(f"FFmpeg error: {e.stderr.decode()}")
+        print(f"FFmpeg error occurred!") # طباعة عامة عند حدوث خطأ
+        print(f"FFmpeg stderr: {e.stderr.decode()}") # طباعة رسالة الخطأ من FFmpeg
         message.reply_text("حدث خطأ أثناء ضغط الفيديو.")
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"General error: {e}")
         message.reply_text("حدث خطأ غير متوقع.")
     finally:
         os.remove(file)
