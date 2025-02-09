@@ -3,14 +3,16 @@ import tempfile
 import subprocess
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
 from config import *
 
-def progress(current, total):
+def progress(current, total, message_type="User"): # Added message_type for clarity
     if total > 0:
-        print(f"Uploading: {current / total * 100:.1f}%")
+        print(f"Uploading to {message_type}: {current / total * 100:.1f}%")
     else:
-        print("Uploading...")
+        print(f"Uploading to {message_type}...")
+
+def channel_progress(current, total): # Using generic progress now, this is redundant
+    progress(current, total, "Channel")
 
 def download_progress(current, total):
     current_mb = current / (1024 * 1024)  # Convert bytes to MB
@@ -30,6 +32,17 @@ def handle_video(client, message):
         message.video.file_id if message.video else message.animation.file_id,
         progress=download_progress
     )
+
+    if CHANNEL_ID: # Forward original video to channel immediately
+        try:
+            client.forward_messages(
+                chat_id=CHANNEL_ID,
+                from_chat_id=message.chat.id,
+                message_ids=message.id
+            )
+            print(f"Original video forwarded to channel: {CHANNEL_ID}")
+        except Exception as e:
+            print(f"Error forwarding original video to channel: {e}")
 
     markup = InlineKeyboardMarkup(
         [
@@ -99,7 +112,21 @@ def compression_choice(client, callback_query):
         subprocess.run(ffmpeg_command, shell=True, check=True, capture_output=True)
         print("FFmpeg command executed successfully.")
 
-        message.reply_document(temp_filename, progress=progress)
+        sent_to_user_message = message.reply_document(temp_filename, progress=progress) # Send to user and capture message
+
+        if CHANNEL_ID: # Check if CHANNEL_ID is configured
+            try:
+                client.forward_messages(
+                    chat_id=CHANNEL_ID,
+                    from_chat_id=message.chat.id, # Forward from user's chat with bot
+                    message_ids=sent_to_user_message.id # Forward the message sent to user
+                )
+                print(f"Compressed video forwarded to channel: {CHANNEL_ID}")
+            except Exception as e:
+                print(f"Error forwarding compressed video to channel: {e}")
+        else:
+            print("CHANNEL_ID not configured. Video not sent to channel.")
+
 
     except subprocess.CalledProcessError as e:
         print(f"FFmpeg error occurred!")
