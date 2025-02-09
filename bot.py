@@ -6,18 +6,16 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import *
 
 def progress(current, total):
-    if total == 0:
-        print("Uploading...")
-    else:
+    if total > 0: # Check if total is a positive value before calculating percentage
         print(f"Uploading: {current / total * 100:.1f}%")
+    else:
+        print("Uploading...")
 
 def download_progress(current, total):
-    print(f"Download Progress - Current: {current}, Total: {total}") # Debugging print
-
-    if total == 0:
-        print("Downloading...")
-    else:
+    if total > 0: # Check if total is a positive value before calculating percentage
         print(f"Downloading: {current / total * 100:.1f}%")
+    else:
+        print("Downloading...")
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
 
