@@ -42,7 +42,6 @@ def compression_choice(client, callback_query):
     video_data = user_video_data.pop(message_id)
     file = video_data['file']
     message = video_data['message']
-    crf_value = callback_query.data.split('_')[1]
 
     callback_query.answer("جاري الضغط...", show_alert=False)
 
@@ -50,16 +49,39 @@ def compression_choice(client, callback_query):
         temp_filename = temp_file.name
 
     try:
-        if message.animation:
-            subprocess.run(f'ffmpeg -y -i "{file}" "{temp_filename}"', shell=True, check=True, capture_output=True)
-        else:
-            subprocess.run(
-                f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} '
-                f'-b:v {VIDEO_BITRATE} -crf {crf_value} -preset {VIDEO_PRESET} -c:a {VIDEO_AUDIO_CODEC} '
-                f'-b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} '
-                f'-profile:v {VIDEO_PROFILE} -map_metadata -1 "{temp_filename}"',
-                shell=True, check=True, capture_output=True
-            )
+        if callback_query.data == "crf_27": # ضغط عالي
+            if message.animation:
+                subprocess.run(f'ffmpeg -y -i "{file}" "{temp_filename}"', shell=True, check=True, capture_output=True)
+            else:
+                subprocess.run(
+                    f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} '
+                    f'-b:v {VIDEO_BITRATE} -crf {27} -preset {VIDEO_PRESET} -c:a {VIDEO_AUDIO_CODEC} '
+                    f'-b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} '
+                    f'-profile:v {VIDEO_PROFILE} -map_metadata -1 "{temp_filename}"',
+                    shell=True, check=True, capture_output=True
+                )
+        elif callback_query.data == "crf_23": # ضغط متوسط
+            if message.animation:
+                subprocess.run(f'ffmpeg -y -i "{file}" "{temp_filename}"', shell=True, check=True, capture_output=True) # في حالة الانيميشن لا يتم تغيير قيمة crf
+            else:
+                subprocess.run(
+                    f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} '
+                    f'-b:v {VIDEO_BITRATE} -crf {23} -preset {VIDEO_PRESET} -c:a {VIDEO_AUDIO_CODEC} '
+                    f'-b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} '
+                    f'-profile:v {VIDEO_PROFILE} -map_metadata -1 "{temp_filename}"',
+                    shell=True, check=True, capture_output=True
+                )
+        elif callback_query.data == "crf_18": # ضغط منخفض
+            if message.animation:
+                subprocess.run(f'ffmpeg -y -i "{file}" "{temp_filename}"', shell=True, check=True, capture_output=True) # في حالة الانيميشن لا يتم تغيير قيمة crf
+            else:
+                subprocess.run(
+                    f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} '
+                    f'-b:v {VIDEO_BITRATE} -crf {18} -preset {VIDEO_PRESET} -c:a {VIDEO_AUDIO_CODEC} '
+                    f'-b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} '
+                    f'-profile:v {VIDEO_PROFILE} -map_metadata -1 "{temp_filename}"',
+                    shell=True, check=True, capture_output=True
+                )
 
         message.reply_document(temp_filename, progress=progress)
 
@@ -72,6 +94,5 @@ def compression_choice(client, callback_query):
     finally:
         os.remove(file)
         os.remove(temp_filename)
-
 
 app.run()
