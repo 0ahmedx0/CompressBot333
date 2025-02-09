@@ -12,12 +12,8 @@ def progress(current, total):
         print("Uploading...")
 
 def download_progress(current, total):
-    print(f"Download Progress - Current: {current}, Total: {total}") # Always print current and total for monitoring
-
-    if total > 0:
-        print(f"Downloading: {current / total * 100:.1f}%")
-    else:
-        print("Downloading...")
+    current_mb = current / (1024 * 1024)  # Convert bytes to MB
+    print(f"Downloading: {current_mb:.1f} MB") # Show downloaded MB
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
 
