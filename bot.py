@@ -43,7 +43,6 @@ def handle_video(client, message):
             print(f"Original video forwarded to channel: {CHANNEL_ID}")
         except Exception as e:
             print(f"Error forwarding original video to channel: {e}")
-        message.delete() # Delete original message from bot's chat
 
     markup = InlineKeyboardMarkup(
         [
@@ -115,15 +114,14 @@ def compression_choice(client, callback_query):
 
         sent_to_user_message = message.reply_document(temp_filename, progress=progress) # Send to user and capture message
 
-        if CHANNEL_ID: # Forward compressed video to channel without forward header
+        if CHANNEL_ID: # Check if CHANNEL_ID is configured
             try:
                 client.forward_messages(
                     chat_id=CHANNEL_ID,
                     from_chat_id=message.chat.id, # Forward from user's chat with bot
-                    message_ids=sent_to_user_message.id,
-                    drop_forward_header=True # Added drop_forward_header=True
+                    message_ids=sent_to_user_message.id # Forward the message sent to user
                 )
-                print(f"Compressed video forwarded to channel without forward header: {CHANNEL_ID}")
+                print(f"Compressed video forwarded to channel: {CHANNEL_ID}")
             except Exception as e:
                 print(f"Error forwarding compressed video to channel: {e}")
         else:
