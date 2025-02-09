@@ -3,6 +3,7 @@ import tempfile
 import subprocess
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
 from config import *
 
 def progress(current, total):
@@ -33,15 +34,17 @@ def handle_video(client, message):
     markup = InlineKeyboardMarkup(
         [
             [
-
-                InlineKeyboardButton("جوده ضعيفه ", callback_data="crf_27"),
-                InlineKeyboardButton(" جوده متوسطه", callback_data="crf_23"),
-                InlineKeyboardButton(" جوده عاليه ", callback_data="crf_18"),
+                InlineKeyboardButton("جوده ضعيفه", callback_data="crf_27"),
+                InlineKeyboardButton("جوده متوسطه", callback_data="crf_23"),
+                InlineKeyboardButton("جوده عاليه", callback_data="crf_18"),
+            ],
+            [
+                InlineKeyboardButton("الغاء", callback_data="cancel_compression"),
             ]
         ]
     )
     reply_message = message.reply_text("اختر مستوى الجوده :", reply_markup=markup, quote=True)
-    user_video_data[reply_message.id] = {'file': file, 'message': message}
+    user_video_data[reply_message.id] = {'file': file, 'message': message, 'button_message_id': reply_message.id} # Store button message id
 
 
 @app.on_callback_query()
@@ -52,12 +55,21 @@ def compression_choice(client, callback_query):
         callback_query.answer("انتهت صلاحية هذا الطلب. يرجى إرسال الفيديو مرة أخرى.", show_alert=True)
         return
 
-    video_data = user_video_data.pop(message_id)
+    if callback_query.data == "cancel_compression":
+        video_data = user_video_data.pop(message_id)
+        file = video_data['file']
+        try:
+            os.remove(file)
+        except Exception as e:
+            print(f"Error deleting file: {e}")
+        callback_query.message.delete() # Delete the button message
+        callback_query.answer("تم إلغاء الضغط وحذف الفيديو.", show_alert=True)
+        return # Stop processing further
+
+    video_data = user_video_data[message_id] # Do not pop, keep data for re-compression
     file = video_data['file']
     message = video_data['message']
-
-    callback_query.edit_message_reply_markup(reply_markup=None) # Remove buttons
-    callback_query.message.delete() # Delete the message itself
+    # No button removal or message deletion here, buttons are kept
 
     callback_query.answer("جاري الضغط...", show_alert=False)
 
