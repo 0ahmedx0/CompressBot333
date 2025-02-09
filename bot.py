@@ -1,9 +1,11 @@
 import os
 import tempfile
 import subprocess
+import threading
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import *
+import time
 
 def progress(current, total, message_type="User"): # Added message_type for clarity
     if total > 0:
@@ -22,12 +24,32 @@ app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
 
 user_video_data = {}
 
+def auto_select_medium_quality(button_message_id):
+    if button_message_id in user_video_data:
+        client = app  # Access the client from the outer scope
+        try:
+            #client.answer_callback_query( # Removed client.answer_callback_query as it's causing errors
+            #    callback_query_id=None, # Pass None instead of dummy string ID
+            #    text="تم اختيار الجودة المتوسطة تلقائيًا.",
+            #    show_alert=False
+            #) # Removed this line causing error
+            compression_choice(client, user_video_data[button_message_id]['dummy_callback_query']) # Call compression_choice with dummy callback
+            print(f"Auto-selected medium quality for message ID: {button_message_id}")
+        except Exception as e:
+            print(f"Error auto-selecting medium quality: {e}")
+        finally:
+            pass # Removed data cleanup from here - Keep data for re-compression
+            #if button_message_id in user_video_data:
+            #    del user_video_data[button_message_id] # Clean up data after auto-selection
+
+
 @app.on_message(filters.command("start"))
 def start(client, message):
     message.reply_text("Send me a video and I will compress it for you.")
 
 @app.on_message(filters.video | filters.animation)
 def handle_video(client, message):
+    user_video_data.clear() # Clear old data when new video is received
     file = client.download_media(
         message.video.file_id if message.video else message.animation.file_id,
         progress=download_progress
@@ -57,7 +79,29 @@ def handle_video(client, message):
         ]
     )
     reply_message = message.reply_text("اختر مستوى الجوده :", reply_markup=markup, quote=True)
-    user_video_data[reply_message.id] = {'file': file, 'message': message, 'button_message_id': reply_message.id} # Store button message id
+    button_message_id = reply_message.id
+
+    # Create a dummy CallbackQuery object for auto-selection
+    class DummyCallbackQuery:
+        def __init__(self, message, data):
+            self.message = message
+            self.data = data
+        def answer(self, text, show_alert):
+            print(f"DummyCallbackQuery Answer: {text}, show_alert={show_alert}") # Optional logging
+
+    dummy_callback_query = DummyCallbackQuery(reply_message, "crf_23")
+
+
+    user_video_data[button_message_id] = {
+        'file': file,
+        'message': message,
+        'button_message_id': button_message_id,
+        'timer': threading.Timer(30, auto_select_medium_quality, args=[button_message_id]),
+        'dummy_callback_query': dummy_callback_query,
+        #'callback_query_id': "dummy_callback_id" # Dummy ID - Not needed anymore, removed this line
+    } # Store button message id and timer
+
+    user_video_data[button_message_id]['timer'].start() # Start the timer
 
 
 @app.on_callback_query()
@@ -69,7 +113,7 @@ def compression_choice(client, callback_query):
         return
 
     if callback_query.data == "cancel_compression":
-        video_data = user_video_data.pop(message_id)
+        video_data = user_video_data.pop(message_id) # pop for cancel - keep this
         file = video_data['file']
         try:
             os.remove(file)
@@ -79,7 +123,15 @@ def compression_choice(client, callback_query):
         callback_query.answer("تم إلغاء الضغط وحذف الفيديو.",show_alert=False)
         return # Stop processing further
 
-    video_data = user_video_data[message_id] # Do not pop, keep data for re-compression
+
+    video_data = user_video_data[message_id] # Do not pop for quality selection - keep this
+
+    if video_data['timer'].is_alive():
+        video_data['timer'].cancel() # Cancel the timer if user chose quality in time
+        print(f"Timer cancelled for message ID: {message_id}")
+
+    # user_video_data.pop(message_id) # Removed pop from here - Keep data for re-compression
+
     file = video_data['file']
     message = video_data['message']
     # No button removal or message deletion here, buttons are kept
