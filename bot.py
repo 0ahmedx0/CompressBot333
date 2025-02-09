@@ -109,7 +109,7 @@ def compression_choice(client, callback_query):
         print(f"General error: {e}")
         message.reply_text("حدث خطأ غير متوقع.")
     finally:
-        os.remove(file)
+        # os.remove(file) # Removed this line to prevent deletion after first compression
         os.remove(temp_filename)
 
 app.run()
