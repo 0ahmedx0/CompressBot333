@@ -6,7 +6,7 @@ import time
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import *  # تأكد من تعريف المتغيرات مثل API_ID, API_HASH, API_TOKEN, CHANNEL_ID, VIDEO_CODEC, VIDEO_PIXEL_FORMAT, VIDEO_AUDIO_CODEC, VIDEO_AUDIO_BITRATE, VIDEO_AUDIO_CHANNELS, VIDEO_AUDIO_SAMPLE_RATE
-                         
+
 def progress(current, total, message_type="User"):
     """عرض تقدم عملية التحميل."""
     if total > 0:
@@ -216,5 +216,18 @@ def compression_choice(client, callback_query):
         finally:
             # لا نقوم بحذف الملف الأصلي حتى نسمح بعمليات إعادة الضغط لاحقًا
             os.remove(temp_filename)
+
+# دالة لفحص والتعرف على القناة عند بدء تشغيل البوت
+def check_channel():
+    # الانتظار لبضع ثوانٍ للتأكد من بدء تشغيل البوت
+    time.sleep(3)
+    try:
+        chat = app.get_chat(CHANNEL_ID)
+        print("تم التعرف على القناة:", chat.title)
+    except Exception as e:
+        print("خطأ في التعرف على القناة:", e)
+
+# تشغيل فحص القناة في خيط منفصل بحيث لا يؤثر على عمل البوت
+threading.Thread(target=check_channel, daemon=True).start()
 
 app.run()
