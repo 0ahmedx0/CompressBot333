@@ -63,22 +63,22 @@ def compression_choice(client, callback_query):
 
     try:
         ffmpeg_command = ""
-        if callback_query.data == "crf_27": # ضغط عالي
+        if callback_query.data == "crf_27": # جوده ضعيفه
             if message.animation:
                 ffmpeg_command = f'ffmpeg -y -i "{file}" "{temp_filename}"'
             else:
-                ffmpeg_command = f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -cq 27 -preset fast -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
-        elif callback_query.data == "crf_23": # ضغط متوسط
+                ffmpeg_command = f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -b:v 500k -preset fast -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
+        elif callback_query.data == "crf_23": #  جوده متوسطه
             if message.animation:
                 ffmpeg_command = f'ffmpeg -y -i "{file}" "{temp_filename}"'
             else:
-                ffmpeg_command = f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -cq 23 -preset medium -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
+                ffmpeg_command = f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -b:v 1000k  -preset medium -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
             
-        elif callback_query.data == "crf_18": # ضغط منخفض
+        elif callback_query.data == "crf_18": #  جوده عاليه 
             if message.animation:
                 ffmpeg_command = f'ffmpeg -y -i "{file}" "{temp_filename}"'
             else:
-                ffmpeg_command = f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -cq 18 -preset medium -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
+                ffmpeg_command = f'ffmpeg -y -i "{file}" -r {VIDEO_FPS} -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -b:v 2000k -preset medium -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
                 
         print(f"Executing FFmpeg command: {ffmpeg_command}")
         subprocess.run(ffmpeg_command, shell=True, check=True, capture_output=True)
