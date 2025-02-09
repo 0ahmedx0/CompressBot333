@@ -7,13 +7,15 @@ from config import *
 
 def progress(current, total):
     if total == 0:
-        print("Uploading...") # Handle case where total is zero
+        print("Uploading...")
     else:
         print(f"Uploading: {current / total * 100:.1f}%")
 
 def download_progress(current, total):
+    print(f"Download Progress - Current: {current}, Total: {total}") # Debugging print
+
     if total == 0:
-        print("Downloading...") # Handle case where total is zero
+        print("Downloading...")
     else:
         print(f"Downloading: {current / total * 100:.1f}%")
 
