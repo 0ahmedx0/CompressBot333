@@ -7,41 +7,38 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import *
 import time
 
-def progress(current, total, message_type="User"): # Added message_type for clarity
+def progress(current, total, message_type="User"):  # Added message_type for clarity
     if total > 0:
         print(f"Uploading to {message_type}: {current / total * 100:.1f}%")
     else:
         print(f"Uploading to {message_type}...")
 
-def channel_progress(current, total): # Using generic progress now, this is redundant
+def channel_progress(current, total):  # Using generic progress now, this is redundant
     progress(current, total, "Channel")
 
 def download_progress(current, total):
     current_mb = current / (1024 * 1024)  # Convert bytes to MB
-    print(f"Downloading: {current_mb:.1f} MB") # Show downloaded MB
+    print(f"Downloading: {current_mb:.1f} MB")  # Show downloaded MB
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
 
 user_video_data = {}
 
+# تعريف قفل عالمي لضمان تنفيذ عمليات الضغط بشكل متسلسل
+processing_lock = threading.Lock()
+
 def auto_select_medium_quality(button_message_id):
     if button_message_id in user_video_data:
         client = app  # Access the client from the outer scope
         try:
-            #client.answer_callback_query( # Removed client.answer_callback_query as it's causing errors
-            #    callback_query_id=None, # Pass None instead of dummy string ID
-            #    text="تم اختيار الجودة المتوسطة تلقائيًا.",
-            #    show_alert=False
-            #) # Removed this line causing error
-            compression_choice(client, user_video_data[button_message_id]['dummy_callback_query']) # Call compression_choice with dummy callback
+            # تم إزالة client.answer_callback_query لما يسبب أخطاء
+            # يتم استدعاء compression_choice مع استعلام وهمي
+            compression_choice(client, user_video_data[button_message_id]['dummy_callback_query'])
             print(f"Auto-selected medium quality for message ID: {button_message_id}")
         except Exception as e:
             print(f"Error auto-selecting medium quality: {e}")
         finally:
-            pass # Removed data cleanup from here - Keep data for re-compression
-            #if button_message_id in user_video_data:
-            #    del user_video_data[button_message_id] # Clean up data after auto-selection
-
+            pass  # تم إزالة عملية التنظيف من هنا - الاحتفاظ بالبيانات لإعادة الضغط لاحقاً
 
 @app.on_message(filters.command("start"))
 def start(client, message):
@@ -49,13 +46,13 @@ def start(client, message):
 
 @app.on_message(filters.video | filters.animation)
 def handle_video(client, message):
-    user_video_data.clear() # Clear old data when new video is received
+    user_video_data.clear()  # Clear old data when new video is received
     file = client.download_media(
         message.video.file_id if message.video else message.animation.file_id,
         progress=download_progress
     )
 
-    if CHANNEL_ID: # Forward original video to channel immediately
+    if CHANNEL_ID:  # Forward original video to channel immediately
         try:
             client.forward_messages(
                 chat_id=CHANNEL_ID,
@@ -87,10 +84,9 @@ def handle_video(client, message):
             self.message = message
             self.data = data
         def answer(self, text, show_alert):
-            print(f"DummyCallbackQuery Answer: {text}, show_alert={show_alert}") # Optional logging
+            print(f"DummyCallbackQuery Answer: {text}, show_alert={show_alert}")  # Optional logging
 
     dummy_callback_query = DummyCallbackQuery(reply_message, "crf_23")
-
 
     user_video_data[button_message_id] = {
         'file': file,
@@ -98,11 +94,9 @@ def handle_video(client, message):
         'button_message_id': button_message_id,
         'timer': threading.Timer(30, auto_select_medium_quality, args=[button_message_id]),
         'dummy_callback_query': dummy_callback_query,
-        #'callback_query_id': "dummy_callback_id" # Dummy ID - Not needed anymore, removed this line
-    } # Store button message id and timer
+    }  # Store button message id and timer
 
-    user_video_data[button_message_id]['timer'].start() # Start the timer
-
+    user_video_data[button_message_id]['timer'].start()  # Start the timer
 
 @app.on_callback_query()
 def compression_choice(client, callback_query):
@@ -112,83 +106,81 @@ def compression_choice(client, callback_query):
         callback_query.answer("انتهت صلاحية هذا الطلب. يرجى إرسال الفيديو مرة أخرى.", show_alert=True)
         return
 
+    # معالجة إلغاء الضغط بشكل فوري دون الدخول للقفل
     if callback_query.data == "cancel_compression":
-        video_data = user_video_data.pop(message_id) # pop for cancel - keep this
+        video_data = user_video_data.pop(message_id)  # pop for cancel - keep this
         file = video_data['file']
         try:
             os.remove(file)
         except Exception as e:
             print(f"Error deleting file: {e}")
-        callback_query.message.delete() # Delete the button message
-        callback_query.answer("تم إلغاء الضغط وحذف الفيديو.",show_alert=False)
-        return # Stop processing further
+        callback_query.message.delete()  # Delete the button message
+        callback_query.answer("تم إلغاء الضغط وحذف الفيديو.", show_alert=False)
+        return
 
+    # عملية الضغط والتحويل والرفع تتم داخل قفل لضمان المعالجة المتسلسلة
+    with processing_lock:
+        video_data = user_video_data[message_id]  # Do not pop for quality selection - keep this
 
-    video_data = user_video_data[message_id] # Do not pop for quality selection - keep this
+        if video_data['timer'].is_alive():
+            video_data['timer'].cancel()  # Cancel the timer if user chose quality in time
+            print(f"Timer cancelled for message ID: {message_id}")
 
-    if video_data['timer'].is_alive():
-        video_data['timer'].cancel() # Cancel the timer if user chose quality in time
-        print(f"Timer cancelled for message ID: {message_id}")
+        file = video_data['file']
+        message = video_data['message']
+        # لا يتم إزالة رسالة الأزرار هنا، الأزرار تبقى كما هي
 
-    # user_video_data.pop(message_id) # Removed pop from here - Keep data for re-compression
+        callback_query.answer("جاري الضغط...", show_alert=False)
 
-    file = video_data['file']
-    message = video_data['message']
-    # No button removal or message deletion here, buttons are kept
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
+            temp_filename = temp_file.name
 
-    callback_query.answer("جاري الضغط...", show_alert=False)
+        try:
+            ffmpeg_command = ""
+            if callback_query.data == "crf_27":  # جوده ضعيفه
+                if message.animation:
+                    ffmpeg_command = f'ffmpeg -y -i "{file}" "{temp_filename}"'
+                else:
+                    ffmpeg_command = f'ffmpeg -y -i "{file}" -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -b:v 1000k -preset fast -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
+            elif callback_query.data == "crf_23":  # جوده متوسطه
+                if message.animation:
+                    ffmpeg_command = f'ffmpeg -y -i "{file}" "{temp_filename}"'
+                else:
+                    ffmpeg_command = f'ffmpeg -y -i "{file}" -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -b:v 1700k  -preset medium -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
+            elif callback_query.data == "crf_18":  # جوده عاليه
+                if message.animation:
+                    ffmpeg_command = f'ffmpeg -y -i "{file}" "{temp_filename}"'
+                else:
+                    ffmpeg_command = f'ffmpeg -y -i "{file}" -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -b:v 2200k -preset medium -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
 
-    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
-        temp_filename = temp_file.name
+            print(f"Executing FFmpeg command: {ffmpeg_command}")
+            subprocess.run(ffmpeg_command, shell=True, check=True, capture_output=True)
+            print("FFmpeg command executed successfully.")
 
-    try:
-        ffmpeg_command = ""
-        if callback_query.data == "crf_27": # جوده ضعيفه
-            if message.animation:
-                ffmpeg_command = f'ffmpeg -y -i "{file}" "{temp_filename}"'
+            sent_to_user_message = message.reply_document(temp_filename, progress=progress)  # Send to user and capture message
+
+            if CHANNEL_ID:  # Check if CHANNEL_ID is configured
+                try:
+                    client.forward_messages(
+                        chat_id=CHANNEL_ID,
+                        from_chat_id=message.chat.id,  # Forward from user's chat with bot
+                        message_ids=sent_to_user_message.id  # Forward the message sent to user
+                    )
+                    print(f"Compressed video forwarded to channel: {CHANNEL_ID}")
+                except Exception as e:
+                    print(f"Error forwarding compressed video to channel: {e}")
             else:
-                ffmpeg_command = f'ffmpeg -y -i "{file}" -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -b:v 1000k -preset fast -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
-        elif callback_query.data == "crf_23": #  جوده متوسطه
-            if message.animation:
-                ffmpeg_command = f'ffmpeg -y -i "{file}" "{temp_filename}"'
-            else:
-                ffmpeg_command = f'ffmpeg -y -i "{file}" -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -b:v 1700k  -preset medium -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
+                print("CHANNEL_ID not configured. Video not sent to channel.")
 
-        elif callback_query.data == "crf_18": #  جوده عاليه
-            if message.animation:
-                ffmpeg_command = f'ffmpeg -y -i "{file}" "{temp_filename}"'
-            else:
-                ffmpeg_command = f'ffmpeg -y -i "{file}" -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -b:v 2200k -preset medium -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
-
-        print(f"Executing FFmpeg command: {ffmpeg_command}")
-        subprocess.run(ffmpeg_command, shell=True, check=True, capture_output=True)
-        print("FFmpeg command executed successfully.")
-
-        sent_to_user_message = message.reply_document(temp_filename, progress=progress) # Send to user and capture message
-
-        if CHANNEL_ID: # Check if CHANNEL_ID is configured
-            try:
-                client.forward_messages(
-                    chat_id=CHANNEL_ID,
-                    from_chat_id=message.chat.id, # Forward from user's chat with bot
-                    message_ids=sent_to_user_message.id # Forward the message sent to user
-                )
-                print(f"Compressed video forwarded to channel: {CHANNEL_ID}")
-            except Exception as e:
-                print(f"Error forwarding compressed video to channel: {e}")
-        else:
-            print("CHANNEL_ID not configured. Video not sent to channel.")
-
-
-    except subprocess.CalledProcessError as e:
-        print(f"FFmpeg error occurred!")
-        print(f"FFmpeg stderr: {e.stderr.decode()}")
-        message.reply_text("حدث خطأ أثناء ضغط الفيديو.")
-    except Exception as e:
-        print(f"General error: {e}")
-        message.reply_text("حدث خطأ غير متوقع.")
-    finally:
-        # os.remove(file) # Removed this line to prevent deletion after first compression
-        os.remove(temp_filename)
+        except subprocess.CalledProcessError as e:
+            print(f"FFmpeg error occurred!")
+            print(f"FFmpeg stderr: {e.stderr.decode()}")
+            message.reply_text("حدث خطأ أثناء ضغط الفيديو.")
+        except Exception as e:
+            print(f"General error: {e}")
+            message.reply_text("حدث خطأ غير متوقع.")
+        finally:
+            # os.remove(file) تم إزالة هذا السطر حتى لا يتم الحذف بعد أول عملية ضغط
+            os.remove(temp_filename)
 
 app.run()
