@@ -35,8 +35,17 @@ def handle_video(client, message):
 
 @app.on_callback_query()
 def compression_choice(client, callback_query):
+    print(f"Callback Query Received: {callback_query}") # Debugging print
+    print(f"Callback Query Message: {callback_query.message}") # Debugging print
+    print(f"Callback Query Reply to Message: {callback_query.message.reply_to_message}") # Debugging print
+
+    if callback_query.message.reply_to_message is None:
+        callback_query.answer("خطأ: لا يمكن العثور على الرسالة الأصلية. يرجى إرسال الفيديو مرة أخرى.", show_alert=True)
+        return
+
     message_id = callback_query.message.reply_to_message.id
     if message_id not in user_video_data:
+        callback_query.answer("انتهت صلاحية هذا الطلب. يرجى إرسال الفيديو مرة أخرى.", show_alert=True)
         return
 
     video_data = user_video_data.pop(message_id)
