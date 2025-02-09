@@ -5,7 +5,7 @@ import os
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 API_TOKEN = os.getenv("API_TOKEN")
-
+CHANNEL_ID = "-1002269682161"  # قم بتغيير هذا إلى معرف قناة Telegram الخاص بك
 # Audio compression settings
 AUDIO_BITRATE = "32k"  
 AUDIO_FORMAT = "mp3" 
