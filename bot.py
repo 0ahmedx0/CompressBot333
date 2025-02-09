@@ -106,7 +106,7 @@ def compression_choice(client, callback_query):
             if message.animation:
                 ffmpeg_command = f'ffmpeg -y -i "{file}" "{temp_filename}"'
             else:
-                ffmpeg_command = f'ffmpeg -y -i "{file}" -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -b:v 2500k -preset medium -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
+                ffmpeg_command = f'ffmpeg -y -i "{file}" -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} -b:v 2200k -preset medium -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
 
         print(f"Executing FFmpeg command: {ffmpeg_command}")
         subprocess.run(ffmpeg_command, shell=True, check=True, capture_output=True)
