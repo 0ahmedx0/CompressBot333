@@ -19,7 +19,6 @@ def start(client, message):
 @app.on_message(filters.video | filters.animation)
 def handle_video(client, message):
     file = client.download_media(message.video.file_id if message.video else message.animation.file_id)
-    user_video_data[message.id] = {'file': file, 'message': message}
 
     markup = InlineKeyboardMarkup(
         [
@@ -30,20 +29,14 @@ def handle_video(client, message):
             ]
         ]
     )
-    message.reply_text("اختر مستوى الضغط:", reply_markup=markup)
+    reply_message = message.reply_text("اختر مستوى الضغط:", reply_markup=markup, quote=True) # احصل على كائن الرسالة المرسلة التي تحتوي على الأزرار
+    user_video_data[reply_message.id] = {'file': file, 'message': message} # خزّن البيانات باستخدام معرّف رسالة الأزرار
 
 
 @app.on_callback_query()
 def compression_choice(client, callback_query):
-    print(f"Callback Query Received: {callback_query}") # Debugging print
-    print(f"Callback Query Message: {callback_query.message}") # Debugging print
-    print(f"Callback Query Reply to Message: {callback_query.message.reply_to_message}") # Debugging print
+    message_id = callback_query.message.id # استخدم message.id الخاص بـ callback_query.message مباشرة
 
-    if callback_query.message.reply_to_message is None:
-        callback_query.answer("خطأ: لا يمكن العثور على الرسالة الأصلية. يرجى إرسال الفيديو مرة أخرى.", show_alert=True)
-        return
-
-    message_id = callback_query.message.reply_to_message.id
     if message_id not in user_video_data:
         callback_query.answer("انتهت صلاحية هذا الطلب. يرجى إرسال الفيديو مرة أخرى.", show_alert=True)
         return
