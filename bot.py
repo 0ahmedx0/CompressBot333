@@ -50,6 +50,12 @@ def process_queue():
         button_message_id = video_data['button_message_id']
 
         try:
+            # التحقق من وجود الملف قبل المعالجة
+            if not os.path.exists(file):
+                print(f"File not found: {file}")
+                message.reply_text("حدث خطأ: لم يتم العثور على الملف الأصلي.")
+                continue
+
             # تحويل الفيديو الأصلي إلى القناة عند بدء المعالجة
             if CHANNEL_ID:
                 try:
@@ -109,6 +115,15 @@ def process_queue():
                 print("CHANNEL_ID not configured. Video not sent to channel.")
                 message.reply_text("لم يتم تهيئة قناة لرفع الفيديو المضغوط.")
 
+            # إعطاء المستخدم 15 ثانية لاختيار نوع ضغط آخر
+            def auto_cancel_after_delay():
+                time.sleep(15)
+                if button_message_id in user_video_data:
+                    # إلغاء العملية تلقائيًا بعد 15 ثانية
+                    cancel_compression(button_message_id)
+
+            threading.Thread(target=auto_cancel_after_delay).start()
+
         except subprocess.CalledProcessError as e:
             print("FFmpeg error occurred!")
             print(f"FFmpeg stderr: {e.stderr.decode()}")
@@ -118,8 +133,8 @@ def process_queue():
             message.reply_text("حدث خطأ غير متوقع.")
         finally:
             # حذف الملف المؤقت
-            os.remove(temp_filename)
-            os.remove(file)
+            if os.path.exists(temp_filename):
+                os.remove(temp_filename)
 
     is_processing = False
 
@@ -139,6 +154,11 @@ def handle_video(client, message):
         message.video.file_id if message.video else message.animation.file_id,
         progress=download_progress
     )
+
+    # التحقق من وجود الملف بعد التنزيل
+    if not os.path.exists(file):
+        message.reply_text("حدث خطأ: لم يتم تنزيل الملف بنجاح.")
+        return
 
     # إعداد قائمة الأزرار لاختيار الجودة
     markup = InlineKeyboardMarkup(
@@ -184,22 +204,7 @@ def compression_choice(client, callback_query):
     video_data = user_video_data[message_id]
 
     if callback_query.data == "cancel_compression":
-        # إلغاء الضغط وحذف الملف
-        file = video_data['file']
-        try:
-            os.remove(file)
-        except Exception as e:
-            print(f"Error deleting file: {e}")
-        callback_query.message.delete()
-        callback_query.answer("تم إلغاء الضغط وحذف الفيديو.", show_alert=False)
-
-        # إيقاف المؤقت إذا كان قيد التشغيل
-        if video_data['timer'] and video_data['timer'].is_alive():
-            video_data['timer'].cancel()
-
-        # بدء معالجة الفيديو التالي إذا كان هناك أي فيديوهات في قائمة الانتظار
-        if not is_processing:
-            threading.Thread(target=process_queue).start()
+        cancel_compression(message_id)
         return
 
     # إيقاف المؤقت إذا كان قيد التشغيل
@@ -230,6 +235,25 @@ def auto_select_medium_quality(button_message_id):
             threading.Thread(target=process_queue).start()
 
         print(f"Auto-selected medium quality for message ID: {button_message_id}")
+
+def cancel_compression(button_message_id):
+    """
+    إلغاء العملية وحذف الملف.
+    """
+    if button_message_id in user_video_data:
+        video_data = user_video_data.pop(button_message_id)
+        file = video_data['file']
+        try:
+            if os.path.exists(file):
+                os.remove(file)
+        except Exception as e:
+            print(f"Error deleting file: {e}")
+        app.get_messages(chat_id=video_data['message'].chat.id, message_ids=button_message_id).delete()
+        print(f"Compression canceled for message ID: {button_message_id}")
+
+        # بدء معالجة الفيديو التالي إذا كان هناك أي فيديوهات في قائمة الانتظار
+        if not is_processing:
+            threading.Thread(target=process_queue).start()
 
 # دالة لفحص والتعرف على القناة عند بدء تشغيل البوت
 def check_channel():
