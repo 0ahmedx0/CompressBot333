@@ -7,11 +7,6 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import *  # تأكد من تعريف المتغيرات مثل API_ID, API_HASH, API_TOKEN, CHANNEL_ID, VIDEO_CODEC, VIDEO_PIXEL_FORMAT, VIDEO_AUDIO_CODEC, VIDEO_AUDIO_BITRATE, VIDEO_AUDIO_CHANNELS, VIDEO_AUDIO_SAMPLE_RATE
 
-# قائمة انتظار لتخزين الفيديوهات التي تحتاج إلى معالجة
-video_queue = []
-processing_lock = threading.Lock()
-is_processing = False
-
 def progress(current, total, message_type="User"):
     """عرض تقدم عملية التحميل."""
     if total > 0:
@@ -33,6 +28,11 @@ app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
 
 # لتخزين بيانات الفيديوهات الواردة
 user_video_data = {}
+
+# قائمة انتظار لتخزين الفيديوهات التي تحتاج إلى معالجة
+video_queue = []
+processing_lock = threading.Lock()
+is_processing = False
 
 def process_queue():
     """معالجة الفيديوهات الموجودة في قائمة الانتظار بشكل متسلسل."""
@@ -120,6 +120,7 @@ def handle_video(client, message):
     معالجة الفيديو أو الرسوم المتحركة المرسلة.
     يتم تحميل الملف ثم إضافته إلى قائمة الانتظار.
     """
+    user_video_data.clear()  # مسح البيانات القديمة عند استلام فيديو جديد
     file = client.download_media(
         message.video.file_id if message.video else message.animation.file_id,
         progress=download_progress
@@ -192,6 +193,19 @@ def compression_choice(client, callback_query):
     # بدء معالجة قائمة الانتظار إذا لم تكن هناك عملية قيد التنفيذ
     if not is_processing:
         threading.Thread(target=process_queue).start()
+
+# دالة لفحص والتعرف على القناة عند بدء تشغيل البوت
+def check_channel():
+    # الانتظار لبضع ثوانٍ للتأكد من بدء تشغيل البوت
+    time.sleep(3)
+    try:
+        chat = app.get_chat(CHANNEL_ID)
+        print("تم التعرف على القناة:", chat.title)
+    except Exception as e:
+        print("خطأ في التعرف على القناة:", e)
+
+# تشغيل فحص القناة في خيط منفصل بحيث لا يؤثر على عمل البوت
+threading.Thread(target=check_channel, daemon=True).start()
 
 # تشغيل البوت
 app.run()
