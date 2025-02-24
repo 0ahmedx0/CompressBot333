@@ -129,7 +129,7 @@ def handle_video(client, message):
 def compression_choice(client, callback_query):
     """
     معالجة استعلام اختيار الجودة.
-    يتم إرسال الفيديو كـ video بدلاً من document.
+    جميع العمليات تتم بشكل متسلسل باستخدام قفل.
     """
     with processing_lock:  # استخدام القفل لضمان التنفيذ المتسلسل
         message_id = callback_query.message.id
@@ -194,21 +194,8 @@ def compression_choice(client, callback_query):
             subprocess.run(ffmpeg_command, shell=True, check=True, capture_output=True)
             print("FFmpeg command executed successfully.")
 
-            # الحصول على معلومات الفيديو (اختياري)
-            import cv2
-            cap = cv2.VideoCapture(temp_filename)
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            duration = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) / cap.get(cv2.CAP_PROP_FPS))
-
-            # إرسال الفيديو المضغوط إلى المستخدم كـ video
-            sent_to_user_message = message.reply_video(
-                video=temp_filename,
-                width=width,
-                height=height,
-                duration=duration,
-                progress=progress
-            )
+            # إرسال الفيديو المضغوط إلى المستخدم
+            sent_to_user_message = message.reply_document(temp_filename, progress=progress)
 
             # إرسال الفيديو المضغوط إلى القناة بدون إعادة التوجيه
             if CHANNEL_ID:
@@ -216,9 +203,6 @@ def compression_choice(client, callback_query):
                     client.send_video(
                         chat_id=CHANNEL_ID,
                         video=temp_filename,  # استخدام الملف المضغوط
-                        width=width,
-                        height=height,
-                        duration=duration,
                         caption="فيديو مضغوط",  # يمكنك تخصيص النص هنا
                         progress=channel_progress
                     )
