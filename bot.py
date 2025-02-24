@@ -6,7 +6,7 @@ import time
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import *  # تأكد من تعريف المتغيرات مثل API_ID, API_HASH, API_TOKEN, CHANNEL_ID, VIDEO_CODEC, VIDEO_PIXEL_FORMAT, VIDEO_AUDIO_CODEC, VIDEO_AUDIO_BITRATE, VIDEO_AUDIO_CHANNELS, VIDEO_AUDIO_SAMPLE_RATE
-
+MAX_QUEUE_SIZE = 10
 # تهيئة مجلد التنزيلات
 DOWNLOADS_DIR = "./downloads"
 if not os.path.exists(DOWNLOADS_DIR):
@@ -60,6 +60,14 @@ def process_queue():
             if not video_queue:
                 is_processing = False
                 return
+            
+            # التحقق من حجم قائمة الانتظار
+            print(f"Current queue size: {len(video_queue)}")
+            if len(video_queue) > MAX_QUEUE_SIZE:
+                print("Queue is full. Waiting for processing...")
+                time.sleep(5)  # انتظار حتى يتم تفريغ القائمة
+                continue
+
             video_data = video_queue.pop(0)  # الحصول على أول فيديو في القائمة
             is_processing = True
 
@@ -146,15 +154,8 @@ def process_queue():
             # حذف الملف المؤقت إذا كان موجودًا
             if temp_filename and os.path.exists(temp_filename):
                 os.remove(temp_filename)
-
-            # عدم حذف الملف الأصلي إلا عند إلغاء العملية أو انتهاء جميع الخيارات
-            if 'cancel_compression' in video_data and video_data['cancel_compression']:
-                if os.path.exists(file):
-                    try:
-                        os.remove(file)
-                        print(f"Deleted original file: {file}")
-                    except Exception as e:
-                        print(f"Error deleting original file {file}: {e}")
+            # لم نقم بحذف الملف الأصلي، ليظل محفوظاً للضغط لاحقاً.
+            time.sleep(5)
 
     is_processing = False
 
@@ -169,7 +170,7 @@ def handle_video(client, message):
     معالجة الفيديو أو الرسوم المتحركة المرسلة.
     يتم تحميل الملف ثم إضافته إلى قائمة الانتظار.
     """
-    user_video_data.clear()  # مسح البيانات القديمة عند استلام فيديو جديد
+    # عدم مسح البيانات القديمة للسماح بمعالجة فيديوهات متعددة
     file = client.download_media(
         message.video.file_id if message.video else message.animation.file_id,
         file_name=f"{DOWNLOADS_DIR}/",
@@ -197,7 +198,7 @@ def handle_video(client, message):
     reply_message = message.reply_text("اختر مستوى الجوده :", reply_markup=markup, quote=True)
     button_message_id = reply_message.id
 
-    # تخزين بيانات الفيديو في قائمة الانتظار
+    # تخزين بيانات الفيديو في القاموس بدون مسح البيانات السابقة للسماح بمعالجة فيديوهات متعددة
     user_video_data[button_message_id] = {
         'file': file,
         'message': message,
@@ -259,7 +260,7 @@ def auto_select_medium_quality(button_message_id):
 
 def cancel_compression(button_message_id):
     """
-    إلغاء العملية وحذف الملف.
+    إلغاء العملية وحذف الملف فقط عند الضغط على زر الإلغاء.
     """
     if button_message_id in user_video_data:
         video_data = user_video_data.pop(button_message_id)
@@ -270,6 +271,7 @@ def cancel_compression(button_message_id):
                 print(f"Deleted file after cancellation: {file}")
         except Exception as e:
             print(f"Error deleting file: {e}")
+        # حذف رسالة اختيار الجودة بعد الإلغاء
         app.get_messages(chat_id=video_data['message'].chat.id, message_ids=button_message_id).delete()
         print(f"Compression canceled for message ID: {button_message_id}")
 
