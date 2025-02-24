@@ -7,6 +7,11 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import *  # تأكد من تعريف المتغيرات مثل API_ID, API_HASH, API_TOKEN, CHANNEL_ID, VIDEO_CODEC, VIDEO_PIXEL_FORMAT, VIDEO_AUDIO_CODEC, VIDEO_AUDIO_BITRATE, VIDEO_AUDIO_CHANNELS, VIDEO_AUDIO_SAMPLE_RATE
 
+# تهيئة مجلد التنزيلات
+DOWNLOADS_DIR = "./downloads"
+if not os.path.exists(DOWNLOADS_DIR):
+    os.makedirs(DOWNLOADS_DIR)
+
 def progress(current, total, message_type="User"):
     """عرض تقدم عملية التحميل."""
     if total > 0:
@@ -33,6 +38,19 @@ user_video_data = {}
 video_queue = []
 processing_lock = threading.Lock()
 is_processing = False
+
+def cleanup_downloads():
+    """
+    تنظيف مجلد التنزيلات عند بدء تشغيل البوت.
+    """
+    for filename in os.listdir(DOWNLOADS_DIR):
+        file_path = os.path.join(DOWNLOADS_DIR, filename)
+        try:
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                print(f"Deleted old file: {file_path}")
+        except Exception as e:
+            print(f"Error deleting file {file_path}: {e}")
 
 def process_queue():
     """معالجة الفيديوهات الموجودة في قائمة الانتظار بشكل متسلسل."""
@@ -117,15 +135,6 @@ def process_queue():
                 print("CHANNEL_ID not configured. Video not sent to channel.")
                 message.reply_text("لم يتم تهيئة قناة لرفع الفيديو المضغوط.")
 
-            # إعطاء المستخدم 15 ثانية لاختيار نوع ضغط آخر
-            def auto_cancel_after_delay():
-                time.sleep(15)
-                if button_message_id in user_video_data:
-                    # إلغاء العملية تلقائيًا بعد 15 ثانية
-                    cancel_compression(button_message_id)
-
-            threading.Thread(target=auto_cancel_after_delay).start()
-
         except subprocess.CalledProcessError as e:
             print("FFmpeg error occurred!")
             print(f"FFmpeg stderr: {e.stderr.decode()}")
@@ -140,7 +149,11 @@ def process_queue():
 
             # حذف الملف الأصلي إذا كان موجودًا
             if os.path.exists(file):
-                os.remove(file)
+                try:
+                    os.remove(file)
+                    print(f"Deleted original file: {file}")
+                except Exception as e:
+                    print(f"Error deleting original file {file}: {e}")
 
     is_processing = False
 
@@ -158,6 +171,7 @@ def handle_video(client, message):
     user_video_data.clear()  # مسح البيانات القديمة عند استلام فيديو جديد
     file = client.download_media(
         message.video.file_id if message.video else message.animation.file_id,
+        file_name=f"{DOWNLOADS_DIR}/",
         progress=download_progress
     )
 
@@ -252,6 +266,7 @@ def cancel_compression(button_message_id):
         try:
             if os.path.exists(file):
                 os.remove(file)
+                print(f"Deleted file after cancellation: {file}")
         except Exception as e:
             print(f"Error deleting file: {e}")
         app.get_messages(chat_id=video_data['message'].chat.id, message_ids=button_message_id).delete()
@@ -270,6 +285,9 @@ def check_channel():
         print("تم التعرف على القناة:", chat.title)
     except Exception as e:
         print("خطأ في التعرف على القناة:", e)
+
+# تنظيف مجلد التنزيلات عند بدء تشغيل البوت
+cleanup_downloads()
 
 # تشغيل فحص القناة في خيط منفصل بحيث لا يؤثر على عمل البوت
 threading.Thread(target=check_channel, daemon=True).start()
