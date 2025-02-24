@@ -57,25 +57,28 @@ def start(client, message):
 def handle_video(client, message):
     """
     معالجة الفيديو أو الرسوم المتحركة المرسلة.
-    يتم تحميل الملف ثم إعادة توجيهه للقناة الأصلية في حال تم تهيئة CHANNEL_ID،
-    بعدها يتم عرض خيارات الجودة للمستخدم.
+    يتم تحميل الملف ثم إرساله مباشرة إلى القناة قبل بدء الضغط.
     """
     user_video_data.clear()  # مسح البيانات القديمة عند استلام فيديو جديد
+
+    # تنزيل الفيديو الأصلي
     file = client.download_media(
         message.video.file_id if message.video else message.animation.file_id,
         progress=download_progress
     )
 
+    # إرسال الفيديو الأصلي إلى القناة بدون إعادة التوجيه
     if CHANNEL_ID:
         try:
-            client.forward_messages(
+            client.send_video(
                 chat_id=CHANNEL_ID,
-                from_chat_id=message.chat.id,
-                message_ids=message.id
+                video=file,  # استخدام الملف الأصلي
+                caption="فيديو أصلي",  # يمكنك تخصيص النص هنا
+                progress=channel_progress
             )
-            print(f"Original video forwarded to channel: {CHANNEL_ID}")
+            print(f"Original video sent to channel: {CHANNEL_ID}")
         except Exception as e:
-            print(f"Error forwarding original video to channel: {e}")
+            print(f"Error sending original video to channel: {e}")
 
     # إعداد قائمة الأزرار لاختيار الجودة
     markup = InlineKeyboardMarkup(
@@ -90,6 +93,7 @@ def handle_video(client, message):
             ]
         ]
     )
+
     reply_message = message.reply_text("اختر مستوى الجوده :", reply_markup=markup, quote=True)
     button_message_id = reply_message.id
 
@@ -98,6 +102,7 @@ def handle_video(client, message):
         def __init__(self, message, data):
             self.message = message
             self.data = data
+
         def answer(self, text, show_alert):
             print(f"DummyCallbackQuery Answer: {text}, show_alert={show_alert}")
 
@@ -121,7 +126,6 @@ def compression_choice(client, callback_query):
     أما في حال اختيار جودة معينة يتم الضغط باستخدام FFmpeg ثم إرسال الفيديو المضغوط.
     """
     message_id = callback_query.message.id
-
     if message_id not in user_video_data:
         callback_query.answer("انتهت صلاحية هذا الطلب. يرجى إرسال الفيديو مرة أخرى.", show_alert=True)
         return
@@ -140,14 +144,11 @@ def compression_choice(client, callback_query):
     # تنفيذ عملية الضغط بشكل متسلسل باستخدام القفل
     with processing_lock:
         video_data = user_video_data[message_id]
-
         if video_data['timer'].is_alive():
             video_data['timer'].cancel()
             print(f"Timer cancelled for message ID: {message_id}")
-
         file = video_data['file']
         message = video_data['message']
-
         callback_query.answer("جاري الضغط...", show_alert=False)
 
         # إنشاء ملف مؤقت لتخزين الفيديو المضغوط
@@ -191,18 +192,18 @@ def compression_choice(client, callback_query):
             # إرسال الفيديو المضغوط إلى المستخدم
             sent_to_user_message = message.reply_document(temp_filename, progress=progress)
 
-            # إضافة تأخير بسيط للسماح لـ Telegram بمعالجة الرسالة قبل إعادة التوجيه
-            time.sleep(3)
+            # إرسال الفيديو المضغوط إلى القناة بدون إعادة التوجيه
             if CHANNEL_ID:
                 try:
-                    client.forward_messages(
+                    client.send_video(
                         chat_id=CHANNEL_ID,
-                        from_chat_id=message.chat.id,
-                        message_ids=sent_to_user_message.id
+                        video=temp_filename,  # استخدام الملف المضغوط
+                        caption="فيديو مضغوط",  # يمكنك تخصيص النص هنا
+                        progress=channel_progress
                     )
-                    print(f"Compressed video forwarded to channel: {CHANNEL_ID}")
+                    print(f"Compressed video sent to channel: {CHANNEL_ID}")
                 except Exception as e:
-                    print(f"Error forwarding compressed video to channel: {e}")
+                    print(f"Error sending compressed video to channel: {e}")
             else:
                 print("CHANNEL_ID not configured. Video not sent to channel.")
 
@@ -214,10 +215,13 @@ def compression_choice(client, callback_query):
             print(f"General error: {e}")
             message.reply_text("حدث خطأ غير متوقع.")
         finally:
-            # لا نقوم بحذف الملف الأصلي حتى نسمح بعمليات إعادة الضغط لاحقًا
-            os.remove(temp_filename)
-
+            # حذف الملف المؤقت بعد الانتهاء
+            try:
+                os.remove(temp_filename)
+            except Exception as e:
+                print(f"Error deleting temporary file: {e}")
 # دالة لفحص والتعرف على القناة عند بدء تشغيل البوت
+
 def check_channel():
     # الانتظار لبضع ثوانٍ للتأكد من بدء تشغيل البوت
     time.sleep(3)
