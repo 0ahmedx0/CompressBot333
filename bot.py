@@ -6,7 +6,7 @@ import time
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import *  # تأكد من تعريف المتغيرات مثل API_ID, API_HASH, API_TOKEN, CHANNEL_ID, VIDEO_CODEC, VIDEO_PIXEL_FORMAT, VIDEO_AUDIO_CODEC, VIDEO_AUDIO_BITRATE, VIDEO_AUDIO_CHANNELS, VIDEO_AUDIO_SAMPLE_RATE
-MAX_QUEUE_SIZE = 10
+MAX_QUEUE_SIZE = 10  # تحديد الحد الأقصى لحجم قائمة الانتظار
 # تهيئة مجلد التنزيلات
 DOWNLOADS_DIR = "./downloads"
 if not os.path.exists(DOWNLOADS_DIR):
@@ -52,7 +52,6 @@ def cleanup_downloads():
         except Exception as e:
             print(f"Error deleting file {file_path}: {e}")
 
-MAX_QUEUE_SIZE = 10  # تحديد الحد الأقصى لحجم قائمة الانتظار
 
 def process_queue():
     """معالجة الفيديوهات الموجودة في قائمة الانتظار بشكل متسلسل."""
@@ -170,8 +169,7 @@ def process_queue():
             time.sleep(5)
 
     is_processing = False
-
-
+    
 @app.on_message(filters.command("start"))
 def start(client, message):
     """الرد على أمر /start."""
