@@ -67,6 +67,7 @@ def process_queue():
         message = video_data['message']
         button_message_id = video_data['button_message_id']
 
+        temp_filename = None  # تهيئة المتغير لتجنب UnboundLocalError
         try:
             # التحقق من وجود الملف قبل المعالجة
             if not os.path.exists(file):
@@ -142,17 +143,18 @@ def process_queue():
             print(f"General error: {e}")
             message.reply_text("حدث خطأ غير متوقع.")
         finally:
-            # حذف الملف المؤقت
-            if os.path.exists(temp_filename):
+            # حذف الملف المؤقت إذا كان موجودًا
+            if temp_filename and os.path.exists(temp_filename):
                 os.remove(temp_filename)
 
-            # حذف الملف الأصلي إذا كان موجودًا
-            if os.path.exists(file):
-                try:
-                    os.remove(file)
-                    print(f"Deleted original file: {file}")
-                except Exception as e:
-                    print(f"Error deleting original file {file}: {e}")
+            # عدم حذف الملف الأصلي إلا عند إلغاء العملية أو انتهاء جميع الخيارات
+            if 'cancel_compression' in video_data and video_data['cancel_compression']:
+                if os.path.exists(file):
+                    try:
+                        os.remove(file)
+                        print(f"Deleted original file: {file}")
+                    except Exception as e:
+                        print(f"Error deleting original file {file}: {e}")
 
     is_processing = False
 
