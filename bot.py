@@ -74,14 +74,13 @@ def process_queue():
                 message.reply_text("حدث خطأ: لم يتم العثور على الملف الأصلي.")
                 continue
 
-            # تحويل الفيديو الأصلي إلى القناة عند بدء المعالجة مع إضافة وصف "الفيديو الأصلي"
+            # تحويل الفيديو الأصلي إلى القناة عند بدء المعالجة (بدون إضافة وصف)
             if CHANNEL_ID:
                 try:
                     app.forward_messages(
                         chat_id=CHANNEL_ID,
                         from_chat_id=message.chat.id,
-                        message_ids=message.id,
-                        caption="الفيديو الأصلي"
+                        message_ids=message.id
                     )
                     print(f"Original video forwarded to channel: {CHANNEL_ID}")
                 except Exception as e:
