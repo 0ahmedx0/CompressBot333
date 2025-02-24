@@ -52,6 +52,8 @@ def cleanup_downloads():
         except Exception as e:
             print(f"Error deleting file {file_path}: {e}")
 
+MAX_QUEUE_SIZE = 10  # تحديد الحد الأقصى لحجم قائمة الانتظار
+
 def process_queue():
     """معالجة الفيديوهات الموجودة في قائمة الانتظار بشكل متسلسل."""
     global is_processing
@@ -155,18 +157,20 @@ def process_queue():
             if temp_filename and os.path.exists(temp_filename):
                 os.remove(temp_filename)
 
-            # حذف الملف الأصلي إذا كان موجودًا
-            if os.path.exists(file):
-                try:
-                    os.remove(file)
-                    print(f"Deleted original file: {file}")
-                except Exception as e:
-                    print(f"Error deleting original file {file}: {e}")
+            # عدم حذف الملف الأصلي إلا عند إلغاء العملية أو انتهاء جميع الخيارات
+            if 'cancel_compression' in video_data and video_data['cancel_compression']:
+                if os.path.exists(file):
+                    try:
+                        os.remove(file)
+                        print(f"Deleted original file: {file}")
+                    except Exception as e:
+                        print(f"Error deleting original file {file}: {e}")
 
             # إضافة تأخير صغير بين العمليات لتجنب تجاوز حدود Telegram API
             time.sleep(5)
 
     is_processing = False
+
 
 @app.on_message(filters.command("start"))
 def start(client, message):
