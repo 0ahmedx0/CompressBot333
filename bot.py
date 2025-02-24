@@ -63,91 +63,91 @@ def handle_video(client, message):
     """
     معالجة الفيديو أو الرسوم المتحركة المرسلة.
     يتم تحميل الملف ثم إرساله مباشرة إلى القناة قبل بدء الضغط.
-    جميع العمليات تتم بشكل متسلسل باستخدام قفل.
     """
-    with processing_lock:  # استخدام القفل لضمان التنفيذ المتسلسل
-        user_video_data.clear()  # مسح البيانات القديمة عند استلام فيديو جديد
+    user_video_data.clear()  # مسح البيانات القديمة عند استلام فيديو جديد
 
-        # تنزيل الفيديو الأصلي
-        file = client.download_media(
-            message.video.file_id if message.video else message.animation.file_id,
-            progress=download_progress
-        )
+    # تنزيل الفيديو الأصلي
+    file = client.download_media(
+        message.video.file_id if message.video else message.animation.file_id,
+        progress=download_progress
+    )
 
-        # إرسال الفيديو الأصلي إلى القناة بدون إعادة التوجيه
-        if CHANNEL_ID:
-            try:
-                client.send_video(
-                    chat_id=CHANNEL_ID,
-                    video=file,  # استخدام الملف الأصلي
-                    caption="فيديو أصلي",  # يمكنك تخصيص النص هنا
-                    progress=channel_progress
-                )
-                print(f"Original video sent to channel: {CHANNEL_ID}")
-            except Exception as e:
-                print(f"Error sending original video to channel: {e}")
+    # إرسال الفيديو الأصلي إلى القناة بدون إعادة التوجيه
+    if CHANNEL_ID:
+        try:
+            client.send_video(
+                chat_id=CHANNEL_ID,
+                video=file,  # استخدام الملف الأصلي
+                caption="فيديو أصلي",  # يمكنك تخصيص النص هنا
+                progress=channel_progress
+            )
+            print(f"Original video sent to channel: {CHANNEL_ID}")
+        except Exception as e:
+            print(f"Error sending original video to channel: {e}")
 
-        # إعداد قائمة الأزرار لاختيار الجودة
-        markup = InlineKeyboardMarkup(
+    # إعداد قائمة الأزرار لاختيار الجودة
+    markup = InlineKeyboardMarkup(
+        [
             [
-                [
-                    InlineKeyboardButton("جوده ضعيفه", callback_data="crf_27"),
-                    InlineKeyboardButton("جوده متوسطه", callback_data="crf_23"),
-                    InlineKeyboardButton("جوده عاليه", callback_data="crf_18"),
-                ],
-                [
-                    InlineKeyboardButton("الغاء", callback_data="cancel_compression"),
-                ]
+                InlineKeyboardButton("جوده ضعيفه", callback_data="crf_27"),
+                InlineKeyboardButton("جوده متوسطه", callback_data="crf_23"),
+                InlineKeyboardButton("جوده عاليه", callback_data="crf_18"),
+            ],
+            [
+                InlineKeyboardButton("الغاء", callback_data="cancel_compression"),
             ]
-        )
+        ]
+    )
 
-        reply_message = message.reply_text("اختر مستوى الجوده :", reply_markup=markup, quote=True)
-        button_message_id = reply_message.id
+    reply_message = message.reply_text("اختر مستوى الجوده :", reply_markup=markup, quote=True)
+    button_message_id = reply_message.id
 
-        # تعريف كائن CallbackQuery وهمي للاستخدام في auto-select
-        class DummyCallbackQuery:
-            def __init__(self, message, data):
-                self.message = message
-                self.data = data
+    # تعريف كائن CallbackQuery وهمي للاستخدام في auto-select
+    class DummyCallbackQuery:
+        def __init__(self, message, data):
+            self.message = message
+            self.data = data
 
-            def answer(self, text, show_alert):
-                print(f"DummyCallbackQuery Answer: {text}, show_alert={show_alert}")
+        def answer(self, text, show_alert):
+            print(f"DummyCallbackQuery Answer: {text}, show_alert={show_alert}")
 
-        dummy_callback_query = DummyCallbackQuery(reply_message, "crf_23")
+    dummy_callback_query = DummyCallbackQuery(reply_message, "crf_23")
 
-        # تخزين بيانات الفيديو مع إعداد مؤقت لاختيار الجودة المتوسطة تلقائيًا بعد 30 ثانية
-        user_video_data[button_message_id] = {
-            'file': file,
-            'message': message,
-            'button_message_id': button_message_id,
-            'timer': threading.Timer(30, auto_select_medium_quality, args=[button_message_id]),
-            'dummy_callback_query': dummy_callback_query,
-        }
-        user_video_data[button_message_id]['timer'].start()
+    # تخزين بيانات الفيديو مع إعداد مؤقت لاختيار الجودة المتوسطة تلقائيًا بعد 30 ثانية
+    user_video_data[button_message_id] = {
+        'file': file,
+        'message': message,
+        'button_message_id': button_message_id,
+        'timer': threading.Timer(30, auto_select_medium_quality, args=[button_message_id]),
+        'dummy_callback_query': dummy_callback_query,
+    }
+    user_video_data[button_message_id]['timer'].start()
 
 @app.on_callback_query()
 def compression_choice(client, callback_query):
     """
     معالجة استعلام اختيار الجودة.
-    جميع العمليات تتم بشكل متسلسل باستخدام قفل.
+    في حال تم إلغاء الضغط يتم حذف الملف وإزالة الأزرار،
+    أما في حال اختيار جودة معينة يتم الضغط باستخدام FFmpeg ثم إرسال الفيديو المضغوط.
     """
-    with processing_lock:  # استخدام القفل لضمان التنفيذ المتسلسل
-        message_id = callback_query.message.id
-        if message_id not in user_video_data:
-            callback_query.answer("انتهت صلاحية هذا الطلب. يرجى إرسال الفيديو مرة أخرى.", show_alert=True)
-            return
+    message_id = callback_query.message.id
+    if message_id not in user_video_data:
+        callback_query.answer("انتهت صلاحية هذا الطلب. يرجى إرسال الفيديو مرة أخرى.", show_alert=True)
+        return
 
-        if callback_query.data == "cancel_compression":
-            video_data = user_video_data.pop(message_id)
-            file = video_data['file']
-            try:
-                os.remove(file)
-            except Exception as e:
-                print(f"Error deleting file: {e}")
-            callback_query.message.delete()
-            callback_query.answer("تم إلغاء الضغط وحذف الفيديو.", show_alert=False)
-            return
+    if callback_query.data == "cancel_compression":
+        video_data = user_video_data.pop(message_id)
+        file = video_data['file']
+        try:
+            os.remove(file)
+        except Exception as e:
+            print(f"Error deleting file: {e}")
+        callback_query.message.delete()
+        callback_query.answer("تم إلغاء الضغط وحذف الفيديو.", show_alert=False)
+        return
 
+    # تنفيذ عملية الضغط بشكل متسلسل باستخدام القفل
+    with processing_lock:
         video_data = user_video_data[message_id]
         if video_data['timer'].is_alive():
             video_data['timer'].cancel()
