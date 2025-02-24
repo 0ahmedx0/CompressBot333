@@ -6,6 +6,11 @@ import time
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import *  # تأكد من تعريف المتغيرات مثل API_ID, API_HASH, API_TOKEN, CHANNEL_ID, VIDEO_CODEC, VIDEO_PIXEL_FORMAT, VIDEO_AUDIO_CODEC, VIDEO_AUDIO_BITRATE, VIDEO_AUDIO_CHANNELS, VIDEO_AUDIO_SAMPLE_RATE
+import threading
+
+# تعريف قفل عالمي لضمان تنفيذ العمليات بشكل متسلسل
+processing_lock = threading.Lock()
+
 
 def progress(current, total, message_type="User"):
     """عرض تقدم عملية التحميل."""
@@ -58,91 +63,91 @@ def handle_video(client, message):
     """
     معالجة الفيديو أو الرسوم المتحركة المرسلة.
     يتم تحميل الملف ثم إرساله مباشرة إلى القناة قبل بدء الضغط.
+    جميع العمليات تتم بشكل متسلسل باستخدام قفل.
     """
-    user_video_data.clear()  # مسح البيانات القديمة عند استلام فيديو جديد
+    with processing_lock:  # استخدام القفل لضمان التنفيذ المتسلسل
+        user_video_data.clear()  # مسح البيانات القديمة عند استلام فيديو جديد
 
-    # تنزيل الفيديو الأصلي
-    file = client.download_media(
-        message.video.file_id if message.video else message.animation.file_id,
-        progress=download_progress
-    )
+        # تنزيل الفيديو الأصلي
+        file = client.download_media(
+            message.video.file_id if message.video else message.animation.file_id,
+            progress=download_progress
+        )
 
-    # إرسال الفيديو الأصلي إلى القناة بدون إعادة التوجيه
-    if CHANNEL_ID:
-        try:
-            client.send_video(
-                chat_id=CHANNEL_ID,
-                video=file,  # استخدام الملف الأصلي
-                caption="فيديو أصلي",  # يمكنك تخصيص النص هنا
-                progress=channel_progress
-            )
-            print(f"Original video sent to channel: {CHANNEL_ID}")
-        except Exception as e:
-            print(f"Error sending original video to channel: {e}")
+        # إرسال الفيديو الأصلي إلى القناة بدون إعادة التوجيه
+        if CHANNEL_ID:
+            try:
+                client.send_video(
+                    chat_id=CHANNEL_ID,
+                    video=file,  # استخدام الملف الأصلي
+                    caption="فيديو أصلي",  # يمكنك تخصيص النص هنا
+                    progress=channel_progress
+                )
+                print(f"Original video sent to channel: {CHANNEL_ID}")
+            except Exception as e:
+                print(f"Error sending original video to channel: {e}")
 
-    # إعداد قائمة الأزرار لاختيار الجودة
-    markup = InlineKeyboardMarkup(
-        [
+        # إعداد قائمة الأزرار لاختيار الجودة
+        markup = InlineKeyboardMarkup(
             [
-                InlineKeyboardButton("جوده ضعيفه", callback_data="crf_27"),
-                InlineKeyboardButton("جوده متوسطه", callback_data="crf_23"),
-                InlineKeyboardButton("جوده عاليه", callback_data="crf_18"),
-            ],
-            [
-                InlineKeyboardButton("الغاء", callback_data="cancel_compression"),
+                [
+                    InlineKeyboardButton("جوده ضعيفه", callback_data="crf_27"),
+                    InlineKeyboardButton("جوده متوسطه", callback_data="crf_23"),
+                    InlineKeyboardButton("جوده عاليه", callback_data="crf_18"),
+                ],
+                [
+                    InlineKeyboardButton("الغاء", callback_data="cancel_compression"),
+                ]
             ]
-        ]
-    )
+        )
 
-    reply_message = message.reply_text("اختر مستوى الجوده :", reply_markup=markup, quote=True)
-    button_message_id = reply_message.id
+        reply_message = message.reply_text("اختر مستوى الجوده :", reply_markup=markup, quote=True)
+        button_message_id = reply_message.id
 
-    # تعريف كائن CallbackQuery وهمي للاستخدام في auto-select
-    class DummyCallbackQuery:
-        def __init__(self, message, data):
-            self.message = message
-            self.data = data
+        # تعريف كائن CallbackQuery وهمي للاستخدام في auto-select
+        class DummyCallbackQuery:
+            def __init__(self, message, data):
+                self.message = message
+                self.data = data
 
-        def answer(self, text, show_alert):
-            print(f"DummyCallbackQuery Answer: {text}, show_alert={show_alert}")
+            def answer(self, text, show_alert):
+                print(f"DummyCallbackQuery Answer: {text}, show_alert={show_alert}")
 
-    dummy_callback_query = DummyCallbackQuery(reply_message, "crf_23")
+        dummy_callback_query = DummyCallbackQuery(reply_message, "crf_23")
 
-    # تخزين بيانات الفيديو مع إعداد مؤقت لاختيار الجودة المتوسطة تلقائيًا بعد 30 ثانية
-    user_video_data[button_message_id] = {
-        'file': file,
-        'message': message,
-        'button_message_id': button_message_id,
-        'timer': threading.Timer(30, auto_select_medium_quality, args=[button_message_id]),
-        'dummy_callback_query': dummy_callback_query,
-    }
-    user_video_data[button_message_id]['timer'].start()
+        # تخزين بيانات الفيديو مع إعداد مؤقت لاختيار الجودة المتوسطة تلقائيًا بعد 30 ثانية
+        user_video_data[button_message_id] = {
+            'file': file,
+            'message': message,
+            'button_message_id': button_message_id,
+            'timer': threading.Timer(30, auto_select_medium_quality, args=[button_message_id]),
+            'dummy_callback_query': dummy_callback_query,
+        }
+        user_video_data[button_message_id]['timer'].start()
 
 @app.on_callback_query()
 def compression_choice(client, callback_query):
     """
     معالجة استعلام اختيار الجودة.
-    في حال تم إلغاء الضغط يتم حذف الملف وإزالة الأزرار،
-    أما في حال اختيار جودة معينة يتم الضغط باستخدام FFmpeg ثم إرسال الفيديو المضغوط.
+    يتم إرسال الفيديو كـ video بدلاً من document.
     """
-    message_id = callback_query.message.id
-    if message_id not in user_video_data:
-        callback_query.answer("انتهت صلاحية هذا الطلب. يرجى إرسال الفيديو مرة أخرى.", show_alert=True)
-        return
+    with processing_lock:  # استخدام القفل لضمان التنفيذ المتسلسل
+        message_id = callback_query.message.id
+        if message_id not in user_video_data:
+            callback_query.answer("انتهت صلاحية هذا الطلب. يرجى إرسال الفيديو مرة أخرى.", show_alert=True)
+            return
 
-    if callback_query.data == "cancel_compression":
-        video_data = user_video_data.pop(message_id)
-        file = video_data['file']
-        try:
-            os.remove(file)
-        except Exception as e:
-            print(f"Error deleting file: {e}")
-        callback_query.message.delete()
-        callback_query.answer("تم إلغاء الضغط وحذف الفيديو.", show_alert=False)
-        return
+        if callback_query.data == "cancel_compression":
+            video_data = user_video_data.pop(message_id)
+            file = video_data['file']
+            try:
+                os.remove(file)
+            except Exception as e:
+                print(f"Error deleting file: {e}")
+            callback_query.message.delete()
+            callback_query.answer("تم إلغاء الضغط وحذف الفيديو.", show_alert=False)
+            return
 
-    # تنفيذ عملية الضغط بشكل متسلسل باستخدام القفل
-    with processing_lock:
         video_data = user_video_data[message_id]
         if video_data['timer'].is_alive():
             video_data['timer'].cancel()
@@ -189,8 +194,21 @@ def compression_choice(client, callback_query):
             subprocess.run(ffmpeg_command, shell=True, check=True, capture_output=True)
             print("FFmpeg command executed successfully.")
 
-            # إرسال الفيديو المضغوط إلى المستخدم
-            sent_to_user_message = message.reply_document(temp_filename, progress=progress)
+            # الحصول على معلومات الفيديو (اختياري)
+            import cv2
+            cap = cv2.VideoCapture(temp_filename)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            duration = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) / cap.get(cv2.CAP_PROP_FPS))
+
+            # إرسال الفيديو المضغوط إلى المستخدم كـ video
+            sent_to_user_message = message.reply_video(
+                video=temp_filename,
+                width=width,
+                height=height,
+                duration=duration,
+                progress=progress
+            )
 
             # إرسال الفيديو المضغوط إلى القناة بدون إعادة التوجيه
             if CHANNEL_ID:
@@ -198,6 +216,9 @@ def compression_choice(client, callback_query):
                     client.send_video(
                         chat_id=CHANNEL_ID,
                         video=temp_filename,  # استخدام الملف المضغوط
+                        width=width,
+                        height=height,
+                        duration=duration,
                         caption="فيديو مضغوط",  # يمكنك تخصيص النص هنا
                         progress=channel_progress
                     )
