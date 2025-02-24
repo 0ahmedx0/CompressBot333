@@ -78,23 +78,25 @@ def process_queue():
             subprocess.run(ffmpeg_command, shell=True, check=True, capture_output=True)
             print("FFmpeg command executed successfully.")
 
-            # إرسال الفيديو المضغوط إلى المستخدم
-            sent_to_user_message = message.reply_document(temp_filename, progress=progress)
-
-            # إضافة تأخير بسيط للسماح لـ Telegram بمعالجة الرسالة قبل إعادة التوجيه
-            time.sleep(3)
+            # إرسال الفيديو المضغوط مباشرة إلى القناة
             if CHANNEL_ID:
                 try:
-                    app.forward_messages(
+                    sent_to_channel_message = app.send_document(
                         chat_id=CHANNEL_ID,
-                        from_chat_id=message.chat.id,
-                        message_ids=sent_to_user_message.id
+                        document=temp_filename,
+                        progress=channel_progress
                     )
-                    print(f"Compressed video forwarded to channel: {CHANNEL_ID}")
+                    print(f"Compressed video uploaded to channel: {CHANNEL_ID}")
+                    
+                    # إشعار المستخدم بنجاح العملية
+                    message.reply_text("تم ضغط الفيديو ورفعه بنجاح إلى القناة.")
                 except Exception as e:
-                    print(f"Error forwarding compressed video to channel: {e}")
+                    print(f"Error uploading compressed video to channel: {e}")
+                    message.reply_text("حدث خطأ أثناء رفع الفيديو المضغوط إلى القناة.")
             else:
                 print("CHANNEL_ID not configured. Video not sent to channel.")
+                message.reply_text("لم يتم تهيئة قناة لرفع الفيديو المضغوط.")
+
         except subprocess.CalledProcessError as e:
             print("FFmpeg error occurred!")
             print(f"FFmpeg stderr: {e.stderr.decode()}")
