@@ -6,7 +6,7 @@ import time
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import *  # تأكد من تعريف المتغيرات مثل API_ID, API_HASH, API_TOKEN, CHANNEL_ID, VIDEO_CODEC, VIDEO_PIXEL_FORMAT, VIDEO_AUDIO_CODEC, VIDEO_AUDIO_BITRATE, VIDEO_AUDIO_CHANNELS, VIDEO_AUDIO_SAMPLE_RATE
-
+MAX_QUEUE_SIZE = 10
 # تهيئة مجلد التنزيلات
 DOWNLOADS_DIR = "./downloads"
 if not os.path.exists(DOWNLOADS_DIR):
@@ -60,6 +60,14 @@ def process_queue():
             if not video_queue:
                 is_processing = False
                 return
+            
+            # التحقق من حجم قائمة الانتظار
+            print(f"Current queue size: {len(video_queue)}")
+            if len(video_queue) > MAX_QUEUE_SIZE:
+                print("Queue is full. Waiting for processing...")
+                time.sleep(5)  # انتظار حتى يتم تفريغ القائمة
+                continue
+
             video_data = video_queue.pop(0)  # الحصول على أول فيديو في القائمة
             is_processing = True
 
@@ -147,14 +155,16 @@ def process_queue():
             if temp_filename and os.path.exists(temp_filename):
                 os.remove(temp_filename)
 
-            # عدم حذف الملف الأصلي إلا عند إلغاء العملية أو انتهاء جميع الخيارات
-            if 'cancel_compression' in video_data and video_data['cancel_compression']:
-                if os.path.exists(file):
-                    try:
-                        os.remove(file)
-                        print(f"Deleted original file: {file}")
-                    except Exception as e:
-                        print(f"Error deleting original file {file}: {e}")
+            # حذف الملف الأصلي إذا كان موجودًا
+            if os.path.exists(file):
+                try:
+                    os.remove(file)
+                    print(f"Deleted original file: {file}")
+                except Exception as e:
+                    print(f"Error deleting original file {file}: {e}")
+
+            # إضافة تأخير صغير بين العمليات لتجنب تجاوز حدود Telegram API
+            time.sleep(5)
 
     is_processing = False
 
