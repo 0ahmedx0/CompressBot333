@@ -50,6 +50,18 @@ def process_queue():
         button_message_id = video_data['button_message_id']
 
         try:
+            # تحويل الفيديو الأصلي إلى القناة عند بدء المعالجة
+            if CHANNEL_ID:
+                try:
+                    app.forward_messages(
+                        chat_id=CHANNEL_ID,
+                        from_chat_id=message.chat.id,
+                        message_ids=message.id
+                    )
+                    print(f"Original video forwarded to channel: {CHANNEL_ID}")
+                except Exception as e:
+                    print(f"Error forwarding original video to channel: {e}")
+
             # إنشاء ملف مؤقت لتخزين الفيديو المضغوط
             with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
                 temp_filename = temp_file.name
@@ -128,17 +140,6 @@ def handle_video(client, message):
         progress=download_progress
     )
 
-    if CHANNEL_ID:
-        try:
-            client.forward_messages(
-                chat_id=CHANNEL_ID,
-                from_chat_id=message.chat.id,
-                message_ids=message.id
-            )
-            print(f"Original video forwarded to channel: {CHANNEL_ID}")
-        except Exception as e:
-            print(f"Error forwarding original video to channel: {e}")
-
     # إعداد قائمة الأزرار لاختيار الجودة
     markup = InlineKeyboardMarkup(
         [
@@ -160,7 +161,13 @@ def handle_video(client, message):
         'file': file,
         'message': message,
         'button_message_id': button_message_id,
+        'timer': None,  # مؤقت للاختيار التلقائي
     }
+
+    # إعداد مؤقت لمدة 30 ثانية للاختيار التلقائي
+    timer = threading.Timer(30, auto_select_medium_quality, args=[button_message_id])
+    user_video_data[button_message_id]['timer'] = timer
+    timer.start()
 
 @app.on_callback_query()
 def compression_choice(client, callback_query):
@@ -174,8 +181,10 @@ def compression_choice(client, callback_query):
         callback_query.answer("انتهت صلاحية هذا الطلب. يرجى إرسال الفيديو مرة أخرى.", show_alert=True)
         return
 
+    video_data = user_video_data[message_id]
+
     if callback_query.data == "cancel_compression":
-        video_data = user_video_data.pop(message_id)
+        # إلغاء الضغط وحذف الملف
         file = video_data['file']
         try:
             os.remove(file)
@@ -183,10 +192,21 @@ def compression_choice(client, callback_query):
             print(f"Error deleting file: {e}")
         callback_query.message.delete()
         callback_query.answer("تم إلغاء الضغط وحذف الفيديو.", show_alert=False)
+
+        # إيقاف المؤقت إذا كان قيد التشغيل
+        if video_data['timer'] and video_data['timer'].is_alive():
+            video_data['timer'].cancel()
+
+        # بدء معالجة الفيديو التالي إذا كان هناك أي فيديوهات في قائمة الانتظار
+        if not is_processing:
+            threading.Thread(target=process_queue).start()
         return
 
+    # إيقاف المؤقت إذا كان قيد التشغيل
+    if video_data['timer'] and video_data['timer'].is_alive():
+        video_data['timer'].cancel()
+
     # إضافة الفيديو إلى قائمة الانتظار مع الجودة المختارة
-    video_data = user_video_data.pop(message_id)
     video_data['quality'] = callback_query.data
     video_queue.append(video_data)
 
@@ -195,6 +215,21 @@ def compression_choice(client, callback_query):
     # بدء معالجة قائمة الانتظار إذا لم تكن هناك عملية قيد التنفيذ
     if not is_processing:
         threading.Thread(target=process_queue).start()
+
+def auto_select_medium_quality(button_message_id):
+    """
+    اختيار الجودة المتوسطة تلقائيًا إذا لم يختار المستخدم خلال 30 ثانية.
+    """
+    if button_message_id in user_video_data:
+        video_data = user_video_data[button_message_id]
+        video_data['quality'] = "crf_23"  # اختيار الجودة المتوسطة تلقائيًا
+        video_queue.append(video_data)
+
+        # بدء معالجة قائمة الانتظار إذا لم تكن هناك عملية قيد التنفيذ
+        if not is_processing:
+            threading.Thread(target=process_queue).start()
+
+        print(f"Auto-selected medium quality for message ID: {button_message_id}")
 
 # دالة لفحص والتعرف على القناة عند بدء تشغيل البوت
 def check_channel():
