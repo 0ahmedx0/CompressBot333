@@ -56,13 +56,14 @@ def process_queue():
                 message.reply_text("حدث خطأ: لم يتم العثور على الملف الأصلي.")
                 continue
 
-            # تحويل الفيديو الأصلي إلى القناة عند بدء المعالجة
+            # تحويل الفيديو الأصلي إلى القناة عند بدء المعالجة مع إضافة وصف "الفيديو الأصلي"
             if CHANNEL_ID:
                 try:
                     app.forward_messages(
                         chat_id=CHANNEL_ID,
                         from_chat_id=message.chat.id,
-                        message_ids=message.id
+                        message_ids=message.id,
+                        caption="الفيديو الأصلي"
                     )
                     print(f"Original video forwarded to channel: {CHANNEL_ID}")
                 except Exception as e:
@@ -96,13 +97,14 @@ def process_queue():
             subprocess.run(ffmpeg_command, shell=True, check=True, capture_output=True)
             print("FFmpeg command executed successfully.")
 
-            # إرسال الفيديو المضغوط مباشرة إلى القناة
+            # إرسال الفيديو المضغوط مباشرة إلى القناة مع إضافة وصف "الفيديو المضغوط"
             if CHANNEL_ID:
                 try:
                     sent_to_channel_message = app.send_document(
                         chat_id=CHANNEL_ID,
                         document=temp_filename,
-                        progress=channel_progress
+                        progress=channel_progress,
+                        caption="الفيديو المضغوط"
                     )
                     print(f"Compressed video uploaded to channel: {CHANNEL_ID}")
                     
@@ -135,6 +137,10 @@ def process_queue():
             # حذف الملف المؤقت
             if os.path.exists(temp_filename):
                 os.remove(temp_filename)
+
+            # حذف الملف الأصلي إذا كان موجودًا
+            if os.path.exists(file):
+                os.remove(file)
 
     is_processing = False
 
