@@ -106,12 +106,11 @@ app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
 async def video_handler(client, message: Message):
     chat_id = message.chat.id
 
-    file = message.video or message.animation
-    file_id = file.file_id
-    file_path = f"{DOWNLOADS_DIR}/{file_id}.mp4"
+    file = message.video or message.animation  # لا ترسل file_id!
+    file_path = f"{DOWNLOADS_DIR}/{file.file_id}.mp4"
 
-    # الحل النهائي:
-    async for file_obj in client.get_file(file_id):
+    # مرر الكائن نفسه وليس file_id
+    async for file_obj in client.get_file(file):
         download_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_obj.file_path}"
         break
     # رسالة التقدم
