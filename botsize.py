@@ -110,10 +110,10 @@ async def video_handler(client, message: Message):
     file_id = file.file_id
     file_path = f"{DOWNLOADS_DIR}/{file_id}.mp4"
 
-    # استخراج رابط التنزيل المباشر
-    file_obj = await client.get_file(file_id)
-    download_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_obj.file_path}"
-
+    # الحل النهائي:
+    async for file_obj in client.get_file(file_id):
+        download_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_obj.file_path}"
+        break
     # رسالة التقدم
     progress = {"current": 0, "total": file.file_size, "speed": 0, "eta": "?", "percent": 0}
     progress_cb = lambda p: progress.update(p)
