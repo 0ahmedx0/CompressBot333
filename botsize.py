@@ -161,15 +161,15 @@ def get_video_metadata(link):
     print(f"Getting metadata for: {link}")
     try:
         result = subprocess.run(
-            ['yt-dlp', '-q', '--dump-json', link], # Added -q
-            capture_output=True, text=True, check=True, timeout=60,
-            stderr=subprocess.PIPE # Capture stderr separately
+            ['yt-dlp', '-q', '--dump-json', link],
+            capture_output=True, text=True, check=True, timeout=60
+            # Removed stderr=subprocess.PIPE
         )
-        # Check stderr first for errors/warnings before processing stdout
+        # Check stderr *after* the run (captured via capture_output)
         if result.stderr:
-            print(f"yt-dlp stderr (metadata): {result.stderr.strip()}") # Log warnings/errors
+            print(f"yt-dlp stderr (metadata): {result.stderr.strip()}")
 
-        metadata = json.loads(result.stdout.strip()) # strip() to remove leading/trailing whitespace
+        metadata = json.loads(result.stdout.strip())
         duration = int(metadata.get('duration', 0))
         original_filename = metadata.get('title') or metadata.get('id') or 'video'
         original_filename = re.sub(r'[\\/:*?"<>|]', '_', original_filename)
@@ -181,7 +181,9 @@ def get_video_metadata(link):
         print(error_msg)
         return None, None, error_msg
     except json.JSONDecodeError as e:
-        error_msg = f"Error decoding yt-dlp JSON metadata: {e}\nyt-dlp stdout:\n{result.stdout[:500]}..." # Include part of stdout
+        # Need to access stderr from the result object here
+        stderr_output = result.stderr.strip() if 'result' in locals() and result.stderr else "N/A"
+        error_msg = f"Error decoding yt-dlp JSON metadata: {e}\nyt-dlp stdout:\n{result.stdout[:500]}...\nyt-dlp stderr:\n{stderr_output[:500]}..." # Include part of stdout/stderr
         print(error_msg)
         return None, None, error_msg
     except Exception as e:
@@ -194,21 +196,20 @@ def get_download_url_with_yt_dlp(link):
     print(f"Getting download URL for: {link}")
     try:
         result = subprocess.run(
-            ['yt-dlp', '-q', '--get-url', link], # Added -q
-            capture_output=True, text=True, check=True, timeout=60,
-            stderr=subprocess.PIPE # Capture stderr separately
+            ['yt-dlp', '-q', '--get-url', link],
+            capture_output=True, text=True, check=True, timeout=60
+             # Removed stderr=subprocess.PIPE
         )
-        # Check stderr first for errors/warnings
+        # Check stderr after the run
         if result.stderr:
-             print(f"yt-dlp stderr (get-url): {result.stderr.strip()}") # Log warnings/errors
+             print(f"yt-dlp stderr (get-url): {result.stderr.strip()}")
 
         url = result.stdout.strip()
         if not url:
              # yt-dlp might succeed but find no suitable URL
-             if result.stderr:
-                 return None, f"yt-dlp returned empty URL. stderr: {result.stderr.strip()}"
-             else:
-                 return None, "yt-dlp returned empty URL."
+             stderr_output = result.stderr.strip() if result.stderr else "N/A"
+             return None, f"yt-dlp returned empty URL. stderr: {stderr_output}"
+
         print(f"Extracted URL: {url[:100]}...")
         return url, None
     except FileNotFoundError:
