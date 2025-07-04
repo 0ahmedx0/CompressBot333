@@ -52,56 +52,6 @@ def cleanup_downloads():
         except Exception as e:
             print(f"Error deleting file {file_path}: {e}")
 
-def sendvideo(message, file_path, caption="الفيديو المضغوط", thumb=None, duration=None, width=None, height=None):
-    try:
-        app.send_video(
-            chat_id=message.chat.id,
-            video=file_path,
-            caption=caption,
-            thumb=thumb,
-            duration=duration,
-            width=width,
-            height=height,
-            supports_streaming=True,
-            progress=progress
-        )
-        print("✅ Video sent to user with streaming support.")
-    except Exception as e:
-        print(f"❌ Error sending video: {e}")
-        message.reply_text("حدث خطأ أثناء إرسال الفيديو.")
-
-def get_video_info(file_path):
-    """
-    استخراج معلومات الفيديو: الصورة المصغرة، المدة، العرض، الارتفاع.
-    """
-    try:
-        # استخراج المدة والأبعاد باستخدام ffmpeg
-        probe = ffmpeg.probe(file_path)
-        video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
-        if not video_stream:
-            return None, None, None, None
-
-        duration = int(float(video_stream['duration']))
-        width = int(video_stream['width'])
-        height = int(video_stream['height'])
-
-        # إنشاء صورة مصغرة من أول إطار باستخدام OpenCV
-        cap = cv2.VideoCapture(file_path)
-        ret, frame = cap.read()
-        cap.release()
-
-        if ret:
-            thumb_path = file_path + "_thumb.jpg"
-            cv2.imwrite(thumb_path, frame)
-        else:
-            thumb_path = None
-
-        return thumb_path, duration, width, height
-    except Exception as e:
-        print(f"Error getting video info: {e}")
-        return None, None, None, None
-
-
 def process_queue():
     """معالجة الفيديوهات الموجودة في قائمة الانتظار بشكل متسلسل."""
     global is_processing
@@ -111,28 +61,30 @@ def process_queue():
                 is_processing = False
                 return
             
+            # التحقق من حجم قائمة الانتظار
             print(f"Current queue size: {len(video_queue)}")
             if len(video_queue) > MAX_QUEUE_SIZE:
                 print("Queue is full. Waiting for processing...")
-                time.sleep(5)
+                time.sleep(5)  # انتظار حتى يتم تفريغ القائمة
                 continue
 
-            video_data = video_queue.pop(0)
+            video_data = video_queue.pop(0)  # الحصول على أول فيديو في القائمة
             is_processing = True
 
         file = video_data['file']
         message = video_data['message']
         button_message_id = video_data['button_message_id']
 
-        temp_filename = None
-        thumb = None  # سيتم توليدها لاحقًا
+        temp_filename = None  # تهيئة المتغير لتجنب UnboundLocalError
         try:
+            # التحقق من وجود الملف قبل المعالجة
             if not os.path.exists(file):
                 print(f"File not found: {file}")
                 message.reply_text("حدث خطأ: لم يتم العثور على الملف الأصلي.")
                 continue
 
-            """if CHANNEL_ID:
+            # تحويل الفيديو الأصلي إلى القناة عند بدء المعالجة (بدون إضافة وصف)
+            if CHANNEL_ID:
                 try:
                     app.forward_messages(
                         chat_id=CHANNEL_ID,
@@ -141,25 +93,26 @@ def process_queue():
                     )
                     print(f"Original video forwarded to channel: {CHANNEL_ID}")
                 except Exception as e:
-                    print(f"Error forwarding original video to channel: {e}")"""
+                    print(f"Error forwarding original video to channel: {e}")
 
+            # إنشاء ملف مؤقت لتخزين الفيديو المضغوط
             with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
                 temp_filename = temp_file.name
 
             ffmpeg_command = ""
-            if video_data['quality'] == "crf_27":
+            if video_data['quality'] == "crf_27":  # جودة منخفضة
                 ffmpeg_command = (
                     f'ffmpeg -y -i "{file}" -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} '
                     f'-b:v 1200k -preset fast -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} '
                     f'-ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
                 )
-            elif video_data['quality'] == "crf_23":
+            elif video_data['quality'] == "crf_23":  # جودة متوسطة
                 ffmpeg_command = (
                     f'ffmpeg -y -i "{file}" -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} '
                     f'-b:v 1700k -preset medium -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} '
                     f'-ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1 "{temp_filename}"'
                 )
-            elif video_data['quality'] == "crf_18":
+            elif video_data['quality'] == "crf_18":  # جودة عالية
                 ffmpeg_command = (
                     f'ffmpeg -y -i "{file}" -c:v {VIDEO_CODEC} -pix_fmt {VIDEO_PIXEL_FORMAT} '
                     f'-b:v 2200k -preset medium -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} '
@@ -170,33 +123,25 @@ def process_queue():
             subprocess.run(ffmpeg_command, shell=True, check=True, capture_output=True)
             print("FFmpeg command executed successfully.")
 
-            # استخراج معلومات الفيديو المضغوط
-            thumb, duration, width, height = get_video_info(temp_filename)
-
-            # إرسال الفيديو للمستخدم مع دعم البث المباشر
-            sendvideo(
-                message=message,
-                file_path=temp_filename,
-                caption="الفيديو المضغوط",
-                thumb=thumb,
-                duration=duration,
-                width=width,
-                height=height
-            )
-
-            # إرسال نسخة إلى القناة (اختياري)
+            # إرسال الفيديو المضغوط مباشرة إلى القناة مع إضافة وصف "الفيديو المضغوط"
             if CHANNEL_ID:
                 try:
-                    app.send_video(
+                    sent_to_channel_message = app.send_document(
                         chat_id=CHANNEL_ID,
-                        video=temp_filename,
-                        caption="الفيديو المضغوط",
-                        supports_streaming=True,
-                        progress=channel_progress
+                        document=temp_filename,
+                        progress=channel_progress,
+                        caption="الفيديو المضغوط"
                     )
-                    print(f"✅ Video also sent to channel {CHANNEL_ID}")
+                    print(f"Compressed video uploaded to channel: {CHANNEL_ID}")
+                    
+                    # إشعار المستخدم بنجاح العملية
+                    message.reply_text("تم ضغط الفيديو ورفعه بنجاح إلى القناة.")
                 except Exception as e:
-                    print(f"❌ Error sending to channel: {e}")
+                    print(f"Error uploading compressed video to channel: {e}")
+                    message.reply_text("حدث خطأ أثناء رفع الفيديو المضغوط إلى القناة.")
+            else:
+                print("CHANNEL_ID not configured. Video not sent to channel.")
+                message.reply_text("لم يتم تهيئة قناة لرفع الفيديو المضغوط.")
 
         except subprocess.CalledProcessError as e:
             print("FFmpeg error occurred!")
@@ -206,10 +151,10 @@ def process_queue():
             print(f"General error: {e}")
             message.reply_text("حدث خطأ غير متوقع.")
         finally:
+            # حذف الملف المؤقت إذا كان موجودًا
             if temp_filename and os.path.exists(temp_filename):
                 os.remove(temp_filename)
-            if thumb and os.path.exists(thumb):
-                os.remove(thumb)
+            # لم نقم بحذف الملف الأصلي، ليظل محفوظاً للضغط لاحقاً.
             time.sleep(5)
 
     is_processing = False
