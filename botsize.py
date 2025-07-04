@@ -108,7 +108,7 @@ async def video_handler(client, message: Message):
 
     file = message.video or message.animation
     file_id = file.file_id
-    file_obj = await client.get_file(file_id)
+    file_obj = client.get_file(file_id)
     file_path = f"{DOWNLOADS_DIR}/{file_id}.mp4"
 
     # الحصول على رابط التنزيل المباشر
