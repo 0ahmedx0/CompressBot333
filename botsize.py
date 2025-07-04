@@ -80,8 +80,9 @@ app = Client(
 
 async def cleanup_downloads():
     """
-    تنظيف مجلد التنزيلات عند بدء تشغيل البوت.
+    تنظيف مجلد التنزيلات.
     """
+    print("Starting cleanup...")
     for filename in os.listdir(DOWNLOADS_DIR):
         file_path = os.path.join(DOWNLOADS_DIR, filename)
         try:
@@ -90,6 +91,8 @@ async def cleanup_downloads():
                 print(f"Deleted old file: {file_path}")
         except Exception as e:
             print(f"Error deleting file {file_path}: {e}")
+    print("Cleanup finished.")
+
 
 async def progress_callback(current, total, client: Client, message: Message):
     """عرض تقدم عملية التحميل أو الرفع."""
@@ -487,12 +490,13 @@ async def cancel_operation(client, message):
 # دالة لفحص والتعرف على القناة عند بدء تشغيل البوت
 async def check_channel(client: Client):
     """فحص والتعرف على القناة عند بدء تشغيل البوت."""
-    # الانتظار لبضع ثوانٍ للتأكد من بدء تشغيل البوت بالكامل
-    await asyncio.sleep(5)
+    # الانتظار لبضع ثوانٍ للتأكد من بدء تشغيل البوت بالكامل (قد لا تكون ضرورية جدا هنا)
+    await asyncio.sleep(1) # تم تقليل وقت الانتظار
     if not CHANNEL_ID:
         print("⚠️ CHANNEL_ID not configured. Uploading compressed videos to channel is disabled.")
         return
     try:
+        # نستخدم CHANNEL_ID مباشرة من config.py بعد أن تأكدنا أنه int
         chat = await client.get_chat(CHANNEL_ID)
         print("تم التعرف على القناة:", chat.title)
     except Exception as e:
@@ -510,5 +514,28 @@ async def on_connect(client):
 
 # تشغيل البوت (في Pyrogram v2.x، app.run() هو دالة awaitable تقوم بتشغيل البوت)
 if __name__ == "__main__":
-    print("Starting bot...")
-    app.run()
+    async def main():
+        # تنظيف مجلد التنزيلات قبل بدء تشغيل البوت
+        await cleanup_downloads()
+
+        print("Starting bot...")
+        await app.start()
+        print("Bot started.")
+
+        # تشغيل فحص القناة في مهمة asyncio منفصلة بعد بدء البوت
+        asyncio.create_task(check_channel(app))
+
+        # انتظر حتى يتوقف البوت (إذا تم إيقافه بواسطة إشارة خارجية مثلا)
+        # هذه الحلقة يمكن استخدامها للحفاظ على البوت يعمل
+        await asyncio.Future() # ببساطة انتظر مهمة Future لا تنتهي
+
+    try:
+        # تشغيل الحلقة الرئيسية
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot stopped manually.")
+    finally:
+        # إيقاف الكلاينت عند الخروج
+        if app.is_connected:
+            app.stop()
+        print("Bot stopped.")
