@@ -108,27 +108,17 @@ async def handle_video(client, message):
     try:
         file_id = message.video.file_id if message.video else message.animation.file_id
 
-        file_info = await client.get_file(file_id)
-        print("file_info:", file_info)
-        print("type:", type(file_info))
-
-        if isinstance(file_info, str):
-            await message.reply_text("❌ لم أستطع جلب معلومات الفيديو من تيليجرام. قد يكون هناك خطأ في النسخة أو في الملف.")
-            return
+        # ✅ هذا يحل كل مشاكل async_generator
+        async for file_info in client.get_file(file_id):
+            break
 
         file_path = file_info.file_path
         file_name = os.path.basename(file_path)
         direct_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_path}"
         local_path = f"{DOWNLOADS_DIR}/{file_name}"
 
-        # ... أكمل كودك كالمعتاد
-
-
-        print(f"📥 Downloading from: {direct_url}")
-
         progress_message = await message.reply_text("🔽 بدأ تحميل الفيديو...")
 
-        # أمر aria2c
         aria2_command = [
             "aria2c", "-x", "16", "-s", "16", "--summary-interval=1", "--console-log-level=warn",
             "-o", file_name, "-d", DOWNLOADS_DIR, direct_url
@@ -145,12 +135,10 @@ async def handle_video(client, message):
             line = process.stdout.readline()
             if not line:
                 break
-
             match = re.search(
                 r'(\d+(?:\.\d+)?[KMG]iB)/(\d+(?:\.\d+)?[KMG]iB)\((\d+(?:\.\d+)?)%\).*DL:(\d+(?:\.\d+)?[KMG]iB).*ETA:(\d+s)',
                 line
             )
-
             if match:
                 downloaded = match.group(1)
                 total = match.group(2)
@@ -180,8 +168,6 @@ async def handle_video(client, message):
             pass
 
         await message.reply_text("✅ تم تحميل الفيديو.\nالآن أرسل **رقم الحجم بالميجابايت** الذي تريده للفيديو (مثال: 50)")
-
-        # حفظ بيانات الفيديو للمستخدم حتى يرسل الرقم
         user_video_data[message.chat.id] = {
             'file': local_path,
             'message': message
