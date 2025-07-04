@@ -1,21 +1,27 @@
 import os
 import re
+import json
 import asyncio
-import aiohttp
 from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import (
     API_ID, API_HASH, API_TOKEN, CHANNEL_ID,
     VIDEO_AUDIO_CODEC, VIDEO_AUDIO_BITRATE,
     VIDEO_AUDIO_CHANNELS, VIDEO_AUDIO_SAMPLE_RATE
 )
 
+# مجلد التنزيلات المؤقت
 DOWNLOADS_DIR = "downloads"
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
-user_video_data = {}
+# تخزين بيانات الفيديوهات قبل الضغط
+user_video_data = {}  # key: chat_id, value: {'file_path': str, 'duration': int}
+
+# قائمة انتظار لضغط الفيديوهات بالتسلسل
 video_queue = []
 is_processing = False
 
+# تهيئة بوت Pyrogram v2.x
 app = Client(
     "bot",
     api_id=API_ID,
@@ -23,37 +29,47 @@ app = Client(
     bot_token=API_TOKEN
 )
 
-@app.on_message(filters.video | filters.animation)
-async def handle_media(client: Client, message):
-    media = message.video or message.animation
-    file_id = media.file_id
+@app.on_message(filters.regex(r'^https?://t\.me/([^/]+)/(\d+)$'))
+async def handle_link(client: Client, message):
+    """
+    عندما يرسل المستخدم رابط قناة + رقم رسالة:
+    - نستخرج الرابط المباشر عبر yt-dlp
+    - ننزل الفيديو باستخدام aria2c مع تقدم
+    - بعد التحميل، نعرض للمستخدم اختيار (ضغط الفيديو أو رفع بدون ضغط)
+    """
+    match = re.match(r'^https?://t\.me/([^/]+)/(\d+)$', message.text)
+    channel_username, msg_id = match.groups()
+    page_url = f"https://t.me/{channel_username}/{msg_id}"
 
-    # 1) Call Bot API getFile to get the file_path
-    async with aiohttp.ClientSession() as session:
-        resp = await session.get(
-            f"https://api.telegram.org/bot{API_TOKEN}/getFile",
-            params={"file_id": file_id}
-        )
-        data = await resp.json()
+    # 1) استخراج رابط الفيديو المباشر
+    proc1 = await asyncio.create_subprocess_exec(
+        "yt-dlp", "-g", page_url,
+        stdout=asyncio.subprocess.PIPE
+    )
+    url_bytes, _ = await proc1.communicate()
+    direct_url = url_bytes.decode().strip()
 
-    # Handle error responses from Telegram
-    if not data.get("ok") or "result" not in data:
-        description = data.get("description", "Unknown error")
-        await message.reply(
-            f"❌ خطأ في الحصول على رابط الملف من Telegram API:\n{description}"
-        )
-        return
+    # 2) استخراج مدة الفيديو (بالثواني) لاستخدامها لاحقًا
+    proc_meta = await asyncio.create_subprocess_exec(
+        "yt-dlp", "-j", page_url,
+        stdout=asyncio.subprocess.PIPE
+    )
+    meta_bytes, _ = await proc_meta.communicate()
+    try:
+        meta = json.loads(meta_bytes)
+        duration = meta.get("duration", 0)
+    except:
+        duration = 0
 
-    file_path = data["result"]["file_path"]
-    direct_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_path}"
-
-    filename = f"{message.chat.id}_{message.message_id}.mp4"
+    # إعداد اسم ومكان الملف
+    filename = f"{message.chat.id}_{msg_id}.mp4"
     out_path = os.path.join(DOWNLOADS_DIR, filename)
 
-    progress_msg = await message.reply("بدء تحميل الفيديو...", quote=True)
+    # رسالة تقدم التنزيل
+    progress_msg = await message.reply("🔄 بدء تحميل الفيديو...", quote=True)
 
-    async def download_and_prompt():
-        proc = await asyncio.create_subprocess_exec(
+    async def _download():
+        proc2 = await asyncio.create_subprocess_exec(
             "aria2c", "-x", "16", "-s", "16",
             "-d", DOWNLOADS_DIR, "-o", filename, direct_url,
             stdout=asyncio.subprocess.PIPE,
@@ -65,7 +81,7 @@ async def handle_media(client: Client, message):
         )
 
         while True:
-            line = await proc.stdout.readline()
+            line = await proc2.stdout.readline()
             if not line:
                 break
             text = line.decode().strip()
@@ -74,8 +90,8 @@ async def handle_media(client: Client, message):
                 loaded, total, percent, speed, eta = m.groups()
                 txt = (
                     f"تحميل الفيديو:\n"
-                    f"{percent}%  |  {loaded}/{total}\n"
-                    f"السرعة: {speed}  |  الوقت المتبقي: {eta}"
+                    f"{percent}% | {loaded}/{total}\n"
+                    f"السرعة: {speed} | الوقت المتبقي: {eta}"
                 )
                 try:
                     await client.edit_message_text(
@@ -86,27 +102,69 @@ async def handle_media(client: Client, message):
                 except:
                     pass
 
-        await proc.wait()
+        await proc2.wait()
+        # حذف رسالة التقدم
         try:
             await client.delete_messages(message.chat.id, progress_msg.message_id)
         except:
             pass
 
+        # حفظ مسار الملف والمدة
         user_video_data[message.chat.id] = {
             "file_path": out_path,
-            "duration": media.duration
+            "duration": duration
         }
-        await client.send_message(
-            message.chat.id,
-            "✅ تم تحميل الفيديو بنجاح.\n"
-            "أرسل **رقم فقط** يمثل الحجم النهائي المطلوب بالميجابايت (مثال: 50)."
-        )
 
-    asyncio.create_task(download_and_prompt())
+        # عرض أزرار الاختيار
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("ضغط الفيديو", callback_data="compress")],
+            [InlineKeyboardButton("رفع بدون ضغط", callback_data="upload_raw")]
+        ])
+        await message.reply("✅ تم التحميل بنجاح. اختر الإجراء:", reply_markup=keyboard)
+
+    # بدء التحميل في مهمة غير متزامنة
+    asyncio.create_task(_download())
+
+
+@app.on_callback_query(filters.regex(r'^compress$'))
+async def on_compress(client: Client, callback_query):
+    """
+    عند الضغط على زر 'ضغط الفيديو':
+    نطلب من المستخدم إرسال الحجم النهائي المطلوب بالميجابايت.
+    """
+    await callback_query.answer()
+    await client.send_message(
+        callback_query.message.chat.id,
+        "📏 أرسل **رقم فقط** يمثل الحجم النهائي المطلوب بالميجابايت (مثال: 50)."
+    )
+
+
+@app.on_callback_query(filters.regex(r'^upload_raw$'))
+async def on_upload_raw(client: Client, callback_query):
+    """
+    عند الضغط على زر 'رفع بدون ضغط':
+    نرفع الفيديو الأصلي مرة أخرى للمستخدم ثم ننظف الملفات.
+    """
+    await callback_query.answer()
+    chat_id = callback_query.message.chat.id
+    info = user_video_data.pop(chat_id, None)
+    if not info:
+        return await client.send_message(chat_id, "⚠️ لا يوجد فيديو جاهز للرفع.")
+    file_path = info["file_path"]
+    await client.send_video(chat_id, video=file_path, caption="📤 الفيديو الأصلي")
+    try:
+        os.remove(file_path)
+    except:
+        pass
 
 
 @app.on_message(filters.text & filters.regex(r'^\d+$'))
 async def handle_size(client: Client, message):
+    """
+    عندما يرسل المستخدم رقم الحجم:
+    - نحسب الـ bitrate
+    - نضيف المهمة إلى قائمة الانتظار للضغط
+    """
     chat_id = message.chat.id
     if chat_id not in user_video_data:
         return
@@ -116,7 +174,8 @@ async def handle_size(client: Client, message):
     duration = info["duration"]
     target_mb = int(message.text)
 
-    bitrate_k = int(target_mb * 1024 * 1024 * 8 / duration / 1000)
+    # حساب bitrate (kb/s)
+    bitrate_k = int(target_mb * 1024 * 1024 * 8 / max(duration, 1) / 1000)
 
     video_queue.append({
         "chat_id": chat_id,
@@ -135,6 +194,9 @@ async def handle_size(client: Client, message):
 
 
 async def process_queue(client: Client):
+    """
+    تنفيذ مهام الضغط واحدة تلو الأخرى.
+    """
     global is_processing
     is_processing = True
 
@@ -172,6 +234,7 @@ async def process_queue(client: Client):
             await client.send_message(chat_id, "❌ حدث خطأ أثناء ضغط الفيديو.")
             continue
 
+        # رفع الفيديو المضغوط
         if CHANNEL_ID:
             try:
                 await client.send_video(
@@ -179,19 +242,24 @@ async def process_queue(client: Client):
                     video=output_path,
                     caption="✅ الفيديو المضغوط"
                 )
-                await client.send_message(chat_id, "🎉 تم ضغط الفيديو ورفعه بنجاح إلى القناة.")
-            except Exception:
-                await client.send_message(chat_id, "❌ حدث خطأ أثناء رفع الفيديو إلى القناة.")
+                await client.send_message(chat_id, "🎉 تم ضغط الفيديو ورفعه بنجاح.")
+            except:
+                await client.send_message(chat_id, "❌ حدث خطأ أثناء رفع الفيديو المضغوط.")
         else:
-            await client.send_message(chat_id, "⚠️ لم يتم تهيئة قناة لرفع الفيديو المضغوط.")
+            await client.send_message(chat_id, "⚠️ لم يتم تهيئة قناة للرفع.")
 
+        # تنظيف الملفات المؤقتة
         for p in (file_path, output_path):
-            try: os.remove(p)
-            except: pass
+            try:
+                os.remove(p)
+            except:
+                pass
 
+        # حذف رسالة الضغط
         try:
             await client.delete_messages(chat_id, compress_msg.message_id)
-        except: pass
+        except:
+            pass
 
         await asyncio.sleep(1)
 
