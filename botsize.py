@@ -35,9 +35,17 @@ async def handle_media(client: Client, message):
             params={"file_id": file_id}
         )
         data = await resp.json()
-    # The JSON “result” contains “file_path” which we plug into the download URL :contentReference[oaicite:0]{index=0}
+
+    # Handle error responses from Telegram
+    if not data.get("ok") or "result" not in data:
+        description = data.get("description", "Unknown error")
+        await message.reply(
+            f"❌ خطأ في الحصول على رابط الملف من Telegram API:\n{description}"
+        )
+        return
+
     file_path = data["result"]["file_path"]
-    direct_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_path}"  # :contentReference[oaicite:1]{index=1}
+    direct_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_path}"
 
     filename = f"{message.chat.id}_{message.message_id}.mp4"
     out_path = os.path.join(DOWNLOADS_DIR, filename)
@@ -90,7 +98,7 @@ async def handle_media(client: Client, message):
         }
         await client.send_message(
             message.chat.id,
-            "تم تحميل الفيديو بنجاح.\n"
+            "✅ تم تحميل الفيديو بنجاح.\n"
             "أرسل **رقم فقط** يمثل الحجم النهائي المطلوب بالميجابايت (مثال: 50)."
         )
 
@@ -117,7 +125,7 @@ async def handle_size(client: Client, message):
     })
 
     await message.reply(
-        "تمت إضافة الفيديو إلى قائمة الانتظار للضغط.\n"
+        "🕒 تمت إضافة الفيديو إلى قائمة الانتظار للضغط.\n"
         "سيتم تنفيذ الضغط بالتسلسل."
     )
 
@@ -136,7 +144,7 @@ async def process_queue(client: Client):
         file_path = item["file_path"]
         bitrate_k = item["bitrate_k"]
 
-        compress_msg = await client.send_message(chat_id, "جاري ضغط الفيديو...")
+        compress_msg = await client.send_message(chat_id, "⚙️ جاري ضغط الفيديو...")
 
         base = os.path.basename(file_path)
         name, _ = os.path.splitext(base)
@@ -161,7 +169,7 @@ async def process_queue(client: Client):
         await proc.wait()
 
         if proc.returncode != 0:
-            await client.send_message(chat_id, "حدث خطأ أثناء ضغط الفيديو.")
+            await client.send_message(chat_id, "❌ حدث خطأ أثناء ضغط الفيديو.")
             continue
 
         if CHANNEL_ID:
@@ -169,13 +177,13 @@ async def process_queue(client: Client):
                 await client.send_video(
                     chat_id=CHANNEL_ID,
                     video=output_path,
-                    caption="الفيديو المضغوط"
+                    caption="✅ الفيديو المضغوط"
                 )
-                await client.send_message(chat_id, "تم ضغط الفيديو ورفعه بنجاح إلى القناة.")
-            except:
-                await client.send_message(chat_id, "حدث خطأ أثناء رفع الفيديو إلى القناة.")
+                await client.send_message(chat_id, "🎉 تم ضغط الفيديو ورفعه بنجاح إلى القناة.")
+            except Exception:
+                await client.send_message(chat_id, "❌ حدث خطأ أثناء رفع الفيديو إلى القناة.")
         else:
-            await client.send_message(chat_id, "لم يتم تهيئة قناة لرفع الفيديو المضغوط.")
+            await client.send_message(chat_id, "⚠️ لم يتم تهيئة قناة لرفع الفيديو المضغوط.")
 
         for p in (file_path, output_path):
             try: os.remove(p)
