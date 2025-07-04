@@ -160,12 +160,13 @@ def get_video_metadata(link):
     """Uses yt-dlp to get video metadata (like duration) from a Telegram link."""
     print(f"Getting metadata for: {link}")
     try:
+        # Removed --force-run-downloader
         result = subprocess.run(
-            ['yt-dlp', '--force-run-downloader', '--dump-json', link],
+            ['yt-dlp', '--dump-json', link], # Removed --force-run-downloader
             capture_output=True, text=True, check=True, timeout=60
         )
         metadata = json.loads(result.stdout)
-        duration = int(metadata.get('duration', 0)) # duration in seconds
+        duration = int(metadata.get('duration', 0))
         original_filename = metadata.get('title') or metadata.get('id') or 'video'
         original_filename = re.sub(r'[\\/:*?"<>|]', '_', original_filename)
         return duration, original_filename, None
@@ -184,9 +185,9 @@ def get_download_url_with_yt_dlp(link):
     """Uses yt-dlp to extract the direct download URL from a Telegram link."""
     print(f"Getting download URL for: {link}")
     try:
-         # Use --force-run-downloader to make yt-dlp work with t.me links
+         # Removed --force-run-downloader
         result = subprocess.run(
-            ['yt-dlp', '--force-run-downloader', '--get-url', link],
+            ['yt-dlp', '--get-url', link], # Removed --force-run-downloader
             capture_output=True, text=True, check=True, timeout=60
         )
         url = result.stdout.strip()
@@ -204,7 +205,7 @@ def get_download_url_with_yt_dlp(link):
         error_msg = f"Error during URL extraction: {e}"
         print(error_msg)
         return None, error_msg
-
+    
 def run_aria2c_and_report_progress(chat_id):
     """Runs aria2c and edits a Telegram message to show progress.
        This runs in a separate thread."""
@@ -883,7 +884,7 @@ def cancel_task(chat_id, user_cancelled=True):
 # --- Main Execution ---
 
 if __name__ == "__main__":
-    print("Bot starting...")
+    print("Bot starting...")    
     cleanup_downloads() # Clean up temp files on startup
 
     # SESSION_DIR handling is done above, before client initialization
