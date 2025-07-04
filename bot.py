@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import subprocess
 import threading
@@ -166,54 +167,102 @@ def start(client, message):
 
 @app.on_message(filters.video | filters.animation)
 def handle_video(client, message):
-    """
-    معالجة الفيديو أو الرسوم المتحركة المرسلة.
-    يتم تحميل الملف ثم إضافته إلى قائمة الانتظار.
-    """
-    # عدم مسح البيانات القديمة للسماح بمعالجة فيديوهات متعددة
-    start = time.time()
-    file = client.download_media(
-        message.video.file_id if message.video else message.animation.file_id,
-        file_name=f"{DOWNLOADS_DIR}/",
-        progress=download_progress,
-        block=False  # يجعل التنزيل غير متزامن ويسرّع العملية
-    )
-    duration = time.time() - start
-    print(f"⏱️ Download finished in {duration:.2f} seconds.")
+    try:
+        file_id = message.video.file_id if message.video else message.animation.file_id
 
-    # التحقق من وجود الملف بعد التنزيل
-    if not os.path.exists(file):
-        message.reply_text("حدث خطأ: لم يتم تنزيل الملف بنجاح.")
-        return
+        # استخراج معلومات الملف من Telegram
+        file_info = client.get_file(file_id)
+        file_path = file_info.file_path
+        file_name = os.path.basename(file_path)
+        direct_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_path}"
+        local_path = f"{DOWNLOADS_DIR}/{file_name}"
 
-    # إعداد قائمة الأزرار لاختيار الجودة
-    markup = InlineKeyboardMarkup(
-        [
+        print(f"📥 Downloading from: {direct_url}")
+
+        # إرسال رسالة مؤقتة لعرض التقدم
+        progress_message = message.reply_text("🔽 بدأ تحميل الفيديو...")
+
+        # أمر aria2c
+        aria2_command = [
+            "aria2c", "-x", "16", "-s", "16", "--summary-interval=1", "--console-log-level=warn",
+            "-o", file_name, "-d", DOWNLOADS_DIR, direct_url
+        ]
+
+        process = subprocess.Popen(
+            aria2_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
+
+        while True:
+            line = process.stdout.readline()
+            if not line:
+                break
+
+            # مثال للسطر: [#a1b2c3 12MiB/35MiB(35%) CN:16 DL:2.3MiB ETA:19s]
+            match = re.search(r'(\d+(?:\.\d+)?[KMG]iB)/(\d+(?:\.\d+)?[KMG]iB)\((\d+(?:\.\d+)?)%\).*DL:(\d+(?:\.\d+)?[KMG]iB).*ETA:(\d+s)', line)
+
+            if match:
+                downloaded = match.group(1)
+                total = match.group(2)
+                percent = match.group(3)
+                speed = match.group(4)
+                eta = match.group(5)
+
+                # نص الرسالة المحدث
+                text = (
+                    f"📥 جاري تحميل الفيديو...\n"
+                    f"⬇️ النسبة: {percent}%\n"
+                    f"💾 الحجم: {downloaded} / {total}\n"
+                    f"⚡ السرعة: {speed}\n"
+                    f"⏳ متبقي: {eta}"
+                )
+
+                try:
+                    progress_message.edit_text(text)
+                except:
+                    pass  # تجاهل أي خطأ بسبب rate limit
+
+        process.wait()
+        if process.returncode != 0:
+            progress_message.edit_text("❌ فشل تحميل الفيديو.")
+            return
+
+        # حذف رسالة التقدم بعد انتهاء التحميل
+        try:
+            progress_message.delete()
+        except:
+            pass
+
+        # إرسال أزرار الجودة
+        markup = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("جوده ضعيفه", callback_data="crf_27"),
                 InlineKeyboardButton("جوده متوسطه", callback_data="crf_23"),
                 InlineKeyboardButton("جوده عاليه", callback_data="crf_18"),
             ],
-            [
-                InlineKeyboardButton("الغاء", callback_data="cancel_compression"),
-            ]
-        ]
-    )
-    reply_message = message.reply_text("اختر مستوى الجوده :", reply_markup=markup, quote=True)
-    button_message_id = reply_message.id
+            [InlineKeyboardButton("الغاء", callback_data="cancel_compression")]
+        ])
+        reply_message = message.reply_text("اختر مستوى الجوده :", reply_markup=markup, quote=True)
+        button_message_id = reply_message.id
 
-    # تخزين بيانات الفيديو في القاموس بدون مسح البيانات السابقة للسماح بمعالجة فيديوهات متعددة
-    user_video_data[button_message_id] = {
-        'file': file,
-        'message': message,
-        'button_message_id': button_message_id,
-        'timer': None,  # مؤقت للاختيار التلقائي
-    }
+        # تخزين بيانات الفيديو
+        user_video_data[button_message_id] = {
+            'file': local_path,
+            'message': message,
+            'button_message_id': button_message_id,
+            'timer': None,
+        }
 
-    # إعداد مؤقت لمدة 30 ثانية للاختيار التلقائي
-    timer = threading.Timer(30, auto_select_medium_quality, args=[button_message_id])
-    user_video_data[button_message_id]['timer'] = timer
-    timer.start()
+        # مؤقت تلقائي لاختيار الجودة المتوسطة
+        timer = threading.Timer(30, auto_select_medium_quality, args=[button_message_id])
+        user_video_data[button_message_id]['timer'] = timer
+        timer.start()
+
+    except Exception as e:
+        print(f"❌ Error in handle_video: {e}")
+        message.reply_text("حدث خطأ أثناء تحميل الفيديو. حاول مرة أخرى.")
 
 @app.on_callback_query()
 def compression_choice(client, callback_query):
