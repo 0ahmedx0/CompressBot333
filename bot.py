@@ -171,12 +171,15 @@ def handle_video(client, message):
     يتم تحميل الملف ثم إضافته إلى قائمة الانتظار.
     """
     # عدم مسح البيانات القديمة للسماح بمعالجة فيديوهات متعددة
+    start = time.time()
     file = client.download_media(
         message.video.file_id if message.video else message.animation.file_id,
         file_name=f"{DOWNLOADS_DIR}/",
         progress=download_progress,
         block=False  # يجعل التنزيل غير متزامن ويسرّع العملية
     )
+    duration = time.time() - start
+    print(f"⏱️ Download finished in {duration:.2f} seconds.")
 
     # التحقق من وجود الملف بعد التنزيل
     if not os.path.exists(file):
