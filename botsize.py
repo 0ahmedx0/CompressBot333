@@ -1,4 +1,3 @@
-# imports
 import os
 import tempfile
 import subprocess
@@ -7,7 +6,9 @@ import time
 import re
 import json
 import shutil
-import queue # A more suitable Queue class for multi-threading
+import queue
+import asyncio # Import asyncio
+
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 from pyrogram.errors import MessageTooLong, FloodWait, BadRequest
@@ -28,21 +29,86 @@ DOWNLOADS_DIR = "./downloads"
 if not os.path.exists(DOWNLOADS_DIR):
     os.makedirs(DOWNLOADS_DIR)
 
-# Maximum concurrent downloads (controlled by aria2c -x and -s, but useful to cap total requests)
-# aria2c itself handles parallel connections per file. This cap isn't strictly necessary for *this* aria2c usage,
-# but a Semaphore could be added if you wanted to limit how many aria2c processes run simultaneously.
-# For this specific request, we rely on aria2c's internal parallelism (-x/-s).
-
 # Queue for sequential compression tasks
 compression_queue = queue.Queue()
-is_processing_compression = False
+# No need for is_processing_compression flag if thread runs continuously
 processing_thread = None # To hold the reference to the processing thread
 
 # Dictionary to store per-user/per-message data
-# Key: user_chat_id, Value: {'state': 'idle'|'downloading'|'waiting_action'|'waiting_size', 'link': str, 'file_path': str, 'duration': int, 'download_msg_id': int, 'action_msg_id': int, 'original_filename': str}
+# Key: user_chat_id, Value: {'state': 'idle'|'downloading'|'waiting_action'|'waiting_size'|'uploading_raw'|'compressing', 'link': str, 'file_path': str, 'duration': int, 'download_msg_id': int, 'action_msg_id': int, 'status_msg_id': int, 'original_filename': str, 'original_message_id': int, 'original_message_chat_id': int}
+# Added status_msg_id, original_message_id, original_message_chat_id for use in threads
 user_tasks = {}
 
-# --- Helper Functions ---
+# --- Helper Functions for Thread-Safe Pyrogram Calls ---
+# These helper coroutines are defined to be run from background threads
+# using asyncio.run_coroutine_threadsafe or app.loop.call_soon_threadsafe
+
+async def _edit_message(chat_id, message_id, text, reply_markup=None):
+    """Helper coroutine to edit a message."""
+    try:
+        await app.edit_message_text(chat_id, message_id, text, reply_markup=reply_markup)
+    except FloodWait as e:
+        print(f"FloodWait editing message {message_id}: {e.value} seconds")
+        await asyncio.sleep(e.value)
+        await _edit_message(chat_id, message_id, text, reply_markup) # Retry after wait
+    except BadRequest as e:
+         print(f"Bad Request editing message {message_id}: {e}")
+         # Message might have been deleted, absorb error
+    except Exception as e:
+        print(f"Error editing message {message_id}: {e}")
+
+async def _send_message(chat_id, text, reply_to_message_id=None):
+    """Helper coroutine to send a message."""
+    try:
+        return await app.send_message(chat_id, text, reply_to_message_id=reply_to_message_id)
+    except FloodWait as e:
+        print(f"FloodWait sending message: {e.value} seconds")
+        await asyncio.sleep(e.value)
+        return await _send_message(chat_id, text, reply_to_message_id) # Retry after wait
+    except Exception as e:
+        print(f"Error sending message to {chat_id}: {e}")
+        return None # Indicate failure
+
+async def _delete_messages(chat_id, message_ids):
+     """Helper coroutine to delete messages."""
+     try:
+          await app.delete_messages(chat_id, message_ids)
+     except Exception as e:
+          print(f"Error deleting messages {message_ids}: {e}")
+
+async def _send_document(chat_id, document, caption=None, file_name=None, reply_to_message_id=None):
+     """Helper coroutine to send a document."""
+     try:
+          await app.send_document(
+              chat_id=chat_id,
+              document=document,
+              caption=caption,
+              file_name=file_name,
+              reply_to_message_id=reply_to_message_id,
+               # Add progress=... here if you need upload progress
+          )
+     except FloodWait as e:
+          print(f"FloodWait sending document: {e.value} seconds")
+          await asyncio.sleep(e.value)
+          await _send_document(chat_id, document, caption=caption, file_name=file_name, reply_to_message_id=reply_to_message_id) # Retry
+     except Exception as e:
+          print(f"Error sending document to {chat_id}: {e}")
+          # Maybe send a text message instead if document fails?
+
+
+def schedule_async_task(coro):
+    """Schedules an async coroutine to run on the main event loop from a sync thread."""
+    # Ensure the app.loop is available and running
+    if app.loop and app.loop.is_running():
+         try:
+              asyncio.run_coroutine_threadsafe(coro, app.loop)
+         except Exception as e:
+              print(f"Error scheduling async task: {e}")
+    else:
+         print("Error: Event loop not running. Cannot schedule async task.")
+
+
+# --- Helper Functions (Synchronous unless marked async) ---
 
 def cleanup_downloads():
     """Cleans up the downloads directory on bot startup."""
@@ -61,7 +127,7 @@ def parse_telegram_link(link):
     """Parses a Telegram link to extract channel username and message ID."""
     match = re.match(r'https://t.me/([a-zA-Z0-9_]+)/(\d+)', link)
     if match:
-        return match.groups() # (channel_username, message_id)
+        return match.groups() # (channel_username, message_id), None for error
     return None
 
 def get_video_metadata(link):
@@ -69,43 +135,76 @@ def get_video_metadata(link):
     print(f"Getting metadata for: {link}")
     try:
         # Use --force-run-downloader to make yt-dlp work with t.me links
-        # This option is specific to getting info, not actual download
-        result = subprocess.run(['yt-dlp', '--force-run-downloader', '--dump-json', link], capture_output=True, text=True, check=True, timeout=60)
+        result = subprocess.run(
+            ['yt-dlp', '--force-run-downloader', '--dump-json', link],
+            capture_output=True, text=True, check=True, timeout=60
+        )
         metadata = json.loads(result.stdout)
         duration = int(metadata.get('duration', 0)) # duration in seconds
-        original_filename = metadata.get('uploader') or metadata.get('title') or 'video'
-        return duration, original_filename
+        # Get a safe filename - yt-dlp's uploader or title can be long/complex
+        original_filename = metadata.get('title') or metadata.get('id') or 'video'
+        # Sanitize filename for OS compatibility
+        original_filename = re.sub(r'[\\/:*?"<>|]', '_', original_filename)
+        return duration, original_filename, None # Return duration, filename, None (for no error)
+    except FileNotFoundError:
+        return None, None, "[Errno 2] yt-dlp command not found. Please ensure yt-dlp is installed and in PATH."
     except subprocess.CalledProcessError as e:
-        print(f"Error getting metadata for {link}: {e.stderr}")
-        return None, None
+        error_msg = f"yt-dlp metadata error: {e.stderr.strip()}"
+        print(error_msg)
+        return None, None, error_msg
     except (json.JSONDecodeError, KeyError, ValueError, Exception) as e:
-        print(f"Error processing metadata for {link}: {e}")
-        return None, None
+        error_msg = f"Error processing yt-dlp metadata: {e}"
+        print(error_msg)
+        return None, None, error_msg
 
 def get_download_url_with_yt_dlp(link):
     """Uses yt-dlp to extract the direct download URL from a Telegram link."""
     print(f"Getting download URL for: {link}")
     try:
          # Use --force-run-downloader to make yt-dlp work with t.me links
-        result = subprocess.run(['yt-dlp', '--force-run-downloader', '--get-url', link], capture_output=True, text=True, check=True, timeout=60)
+        result = subprocess.run(
+            ['yt-dlp', '--force-run-downloader', '--get-url', link],
+            capture_output=True, text=True, check=True, timeout=60
+        )
         url = result.stdout.strip()
+        if not url: # yt-dlp might return empty string if no URL found
+             return None, "yt-dlp returned empty URL."
         print(f"Extracted URL: {url[:100]}...") # Print only start of URL
-        return url
+        return url, None # Return URL, None (for no error)
+    except FileNotFoundError:
+         return None, "[Errno 2] yt-dlp command not found. Please ensure yt-dlp is installed and in PATH."
     except subprocess.CalledProcessError as e:
-        print(f"Error getting download URL for {link}: {e.stderr}")
-        return None
+        error_msg = f"yt-dlp get-url error: {e.stderr.strip()}"
+        print(error_msg)
+        return None, error_msg
     except Exception as e:
-        print(f"Error during URL extraction for {link}: {e}")
-        return None
+        error_msg = f"Error during URL extraction: {e}"
+        print(error_msg)
+        return None, error_msg
 
-def run_aria2c_and_report_progress(chat_id, link, download_url, download_path, progress_msg_id):
-    """Runs aria2c and edits a Telegram message to show progress."""
+def run_aria2c_and_report_progress(chat_id):
+    """Runs aria2c and edits a Telegram message to show progress.
+       This runs in a separate thread."""
+
+    # Get task data safely inside the thread
+    task_data = user_tasks.get(chat_id)
+    if not task_data or task_data['state'] != 'downloading':
+        print(f"Task data not found or state not downloading for chat {chat_id}")
+        return
+
+    link = task_data['link']
+    download_url = task_data['download_url'] # Get from task_data
+    download_path = task_data['file_path']
+    progress_msg_id = task_data['download_msg_id']
+    original_filename = task_data['original_filename']
+
+
     print(f"Starting aria2c download for chat {chat_id}...")
     aria2c_cmd = [
         'aria2c',
         download_url,
-        '--dir', DOWNLOADS_DIR, # Set download directory
-        '--out', os.path.basename(download_path), # Set output filename relative to dir
+        '--dir', os.path.dirname(download_path), # Set download directory to where tempfile points
+        '--out', os.path.basename(download_path), # Set output filename
         '-x', '16', # max-concurrent-downloads per file
         '-s', '16', # max-connection-per-server
         '--auto-file-renaming=false', # Prevent aria2c from renaming if file exists
@@ -117,165 +216,148 @@ def run_aria2c_and_report_progress(chat_id, link, download_url, download_path, p
         # '--log=/tmp/aria2c.log'
     ]
 
+    # Ensure the target directory for the temp file exists
+    os.makedirs(os.path.dirname(download_path), exist_ok=True)
+
     try:
-        user_tasks[chat_id]['state'] = 'downloading'
-        process = subprocess.Popen(aria2c_cmd, cwd=DOWNLOADS_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        process = subprocess.Popen(aria2c_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
 
         last_edit_time = time.time()
         initial_status_sent = False
 
         # Pattern to extract progress: D: Total / Downloaded (percentage) ETA: Time Speed: Speed
         # Example line: [DL: 10M/50M(20%) CN: 2 ETA: 00h01m Speed: 1.5M]
-        # We need to parse stderr/stdout as combined because of STDOUT redirect
         progress_pattern = re.compile(r'\[DL:\s+(\d+\.?\d*[KMGT]?i?B)/(\d+\.?\d*[KMGT]?i?B)\((\d+\.?\d*%)\)\s+CN:\s*\d+\s+ETA:\s*(\S+)\s+Speed:\s*(\S+)]')
 
         while True:
             line = process.stdout.readline()
             if not line:
-                if process.poll() is not None: # Check if process has terminated
+                if process.poll() is not None:
                     break
-                time.sleep(0.1) # Don't busy-wait
+                time.sleep(0.1)
                 continue
 
             line = line.strip()
             # print(f"aria2c out: {line}") # Debugging aria2c output
 
             if "download completed" in line.lower():
-                 # Success indicator
+                 # Success indicator line
                  break # Exit the reading loop, process will terminate shortly
 
             match = progress_pattern.search(line)
             if match:
                 downloaded, total, percentage, eta, speed = match.groups()
-                status_text = f"📥 **Downloading:**\n`{os.path.basename(download_path)}`\n\n**Progress:** `{downloaded} / {total}`\n**Percentage:** `{percentage}`\n**Speed:** `{speed}`\n**ETA:** `{eta}`"
+                status_text = f"📥 **Downloading:**\n`{original_filename}`\n\n**Progress:** `{downloaded} / {total}`\n**Percentage:** `{percentage}`\n**Speed:** `{speed}`\n**ETA:** `{eta}`"
 
                 # Edit the message only every few seconds to avoid flood waits
                 current_time = time.time()
                 if current_time - last_edit_time >= 2 or not initial_status_sent: # Edit at least every 2 seconds
-                    try:
-                        app.edit_message_text(chat_id, progress_msg_id, status_text)
-                        last_edit_time = current_time
-                        initial_status_sent = True
-                    except FloodWait as e:
-                        print(f"FloodWait editing message: {e.value} seconds")
-                        time.sleep(e.value) # Wait before retrying edit
-                        last_edit_time = current_time # Update time to avoid immediate re-edit
-                    except BadRequest as e:
-                         print(f"Bad Request editing message {progress_msg_id}: {e}")
-                         # This can happen if message was deleted manually.
-                         # We might want to stop the download if message is gone, but tricky to handle here.
-                         # Let's continue for now and handle download failure if message is gone.
-                    except Exception as e:
-                         print(f"Error editing message {progress_msg_id}: {e}")
+                    schedule_async_task(_edit_message(chat_id, progress_msg_id, status_text))
+                    last_edit_time = current_time
+                    initial_status_sent = True
 
-        # Wait for the process to actually finish after loop breaks
-        process.wait()
 
-        if process.returncode == 0:
-            print(f"aria2c download completed successfully for chat {chat_id}")
+        # Wait for the process to actually finish after loop breaks or on error
+        # Communicate to get any remaining output in stderr/stdout
+        stdout, stderr = process.communicate() # Collect remaining output
+        full_output = (line + "\n" + stdout.strip()).strip()
+        if stderr: print(f"aria2c stderr: {stderr.strip()}")
+
+
+        if process.returncode == 0 and os.path.exists(download_path):
+            print(f"aria2c download completed successfully for chat {chat_id}. File exists at {download_path}")
             # Update the message one last time to confirm completion
-            try:
-                 app.edit_message_text(chat_id, progress_msg_id, f"✅ Download complete:\n`{os.path.basename(download_path)}`")
-            except Exception as e:
-                 print(f"Error editing final download complete message: {e}")
-
-            # Move the file from DOWNLOADS_DIR to the expected temporary path if aria2c saved it under a different name/structure
-            # By setting --out and --dir, aria2c should ideally save it directly.
-            # Check if the file exists at the target path
-            if not os.path.exists(download_path):
-                 print(f"Warning: Expected file {download_path} not found after aria2c. Checking DOWNLOADS_DIR...")
-                 # aria2c might save it with a slightly different name or in a subdir if options were tricky.
-                 # Simple check: find the first file in the dir matching expected prefix
-                 downloaded_files = [f for f in os.listdir(DOWNLOADS_DIR) if f.startswith(os.path.basename(download_path).split('.')[0]) and f != os.path.basename(download_path)]
-                 if downloaded_files:
-                      actual_downloaded_file = os.path.join(DOWNLOADS_DIR, downloaded_files[0])
-                      print(f"Found potentially matching file: {actual_downloaded_file}. Renaming/Moving...")
-                      try:
-                           # Move the file to the *exact* location expected by user_tasks[chat_id]['file_path']
-                           # Ensure target directory exists first (the tempfile one)
-                           target_dir = os.path.dirname(download_path)
-                           os.makedirs(target_dir, exist_ok=True)
-                           shutil.move(actual_downloaded_file, download_path)
-                           print(f"Moved '{actual_downloaded_file}' to '{download_path}'")
-                      except Exception as e:
-                           print(f"Error moving downloaded file: {e}")
-                           # File not at expected location, mark as failed
-                           if chat_id in user_tasks:
-                               user_tasks[chat_id]['state'] = 'failed'
-                               handle_error_cleanup(chat_id, f"حدث خطأ في تحديد مسار الملف بعد التنزيل.")
-                           return # Stop processing this task
-                 else:
-                      print(f"Error: Downloaded file not found at expected path {download_path} and no similar files found in {DOWNLOADS_DIR}")
-                      if chat_id in user_tasks:
-                           user_tasks[chat_id]['state'] = 'failed'
-                           handle_error_cleanup(chat_id, f"حدث خطأ في تحديد مسار الملف بعد التنزيل.")
-                      return # Stop processing this task
+            schedule_async_task(_edit_message(chat_id, progress_msg_id, f"✅ Download complete:\n`{original_filename}`"))
 
             # Download successful, present action options
-            if chat_id in user_tasks:
+            if chat_id in user_tasks: # Re-check in case task was cancelled
                  user_tasks[chat_id]['state'] = 'waiting_action'
                  action_markup = InlineKeyboardMarkup([
                      [InlineKeyboardButton("ضغط الفيديو", callback_data=f"compress_{chat_id}"),
                       InlineKeyboardButton("رفع بدون ضغط", callback_data=f"upload_raw_{chat_id}")]
                  ])
-                 try:
-                     action_msg = app.send_message(chat_id, "📥 تم التنزيل. ماذا تود أن تفعل؟", reply_markup=action_markup)
-                     user_tasks[chat_id]['action_msg_id'] = action_msg.id
-                     # Delete the progress message if successful
-                     try:
-                         app.delete_messages(chat_id, progress_msg_id)
-                     except Exception as e:
-                         print(f"Error deleting progress message {progress_msg_id}: {e}")
+                 schedule_async_task(_send_message(chat_id, "📥 تم التنزيل. ماذا تود أن تفعل؟", reply_markup=action_markup))
+                 # The action message ID is needed in the callback handler, but we get it there from the callback_query.message
+                 # No need to store action_msg_id in user_tasks unless we need to delete it *before* callback
 
-                 except Exception as e:
-                      print(f"Error sending action message: {e}")
-                      # Clean up on send message error
-                      handle_error_cleanup(chat_id, "حدث خطأ في إرسال خيارات الإجراء.")
+                 # Delete the progress message if successful
+                 schedule_async_task(_delete_messages(chat_id, progress_msg_id))
+
+
         else:
             print(f"aria2c download failed for chat {chat_id} with return code {process.returncode}")
-            stderr_output = process.communicate()[1].decode().strip() # Capture remaining stderr if any
-            print(f"aria2c stderr/stdout: {stderr_output}")
-            # Handle download failure
-            if chat_id in user_tasks:
-                 user_tasks[chat_id]['state'] = 'failed'
-                 error_msg = f"❌ فشل التنزيل:\n`aria2c exited with code {process.returncode}`\nDetails:\n`{stderr_output[-500:]}`" # Last 500 chars of output
-                 handle_error_cleanup(chat_id, error_msg, True) # Clean file if partially downloaded
+            error_output = full_output if full_output else f"aria2c exited with code {process.returncode}"
+            # Handle download failure and cleanup via async helper
+            error_msg = f"❌ فشل التنزيل:\n`{error_output[-500:]}`" # Last 500 chars of output
+            schedule_async_task(_send_message(chat_id, error_msg)) # Notify user
+            schedule_async_task(_delete_messages(chat_id, progress_msg_id)) # Delete progress message
+            if chat_id in user_tasks: # Remove task data on failure
+                 task_data = user_tasks.pop(chat_id, None)
+                 if task_data and task_data.get('file_path') and os.path.exists(task_data['file_path']):
+                      try: os.remove(task_data['file_path'])
+                      except Exception as e: print(f"Error cleaning up file {task_data['file_path']} after download failure: {e}")
+
 
     except FileNotFoundError:
-        print("Error: aria2c not found. Please ensure it's installed and in your system's PATH.")
-        if chat_id in user_tasks:
-             user_tasks[chat_id]['state'] = 'failed'
-             handle_error_cleanup(chat_id, "❌ فشل التنزيل: أداة `aria2c` غير موجودة على الخادم.", True)
+        print("Error: aria2c not found.")
+        schedule_async_task(_send_message(chat_id, "❌ فشل التنزيل: أداة `aria2c` غير موجودة على الخادم."))
+        schedule_async_task(_delete_messages(chat_id, progress_msg_id)) # Delete progress message
+        user_tasks.pop(chat_id, None) # Clean task data
+
     except Exception as e:
         print(f"An error occurred during aria2c execution for chat {chat_id}: {e}")
+        error_msg = f"❌ فشل التنزيل بسبب خطأ غير متوقع: {e}"
+        schedule_async_task(_send_message(chat_id, error_msg))
+        schedule_async_task(_delete_messages(chat_id, progress_msg_id)) # Delete progress message
         if chat_id in user_tasks:
-             user_tasks[chat_id]['state'] = 'failed'
-             handle_error_cleanup(chat_id, f"❌ فشل التنزيل بسبب خطأ غير متوقع: {e}", True)
+             task_data = user_tasks.pop(chat_id, None)
+             if task_data and task_data.get('file_path') and os.path.exists(task_data['file_path']):
+                  try: os.remove(task_data['file_path'])
+                  except Exception as e: print(f"Error cleaning up file {task_data['file_path']} after unexpected download error: {e}")
+
 
 def calculate_bitrate(target_mb, duration_seconds):
     """Calculates the required video bitrate in kb/s for a target size."""
-    if duration_seconds <= 0:
-        return 1000 # Default if duration is zero or negative
+    if duration_seconds <= 0 or target_mb <= 0:
+        return 1000 # Default if duration/target is zero or negative
 
     # Target size in bits = target_mb * 1024 * 1024 * 8
     # Required bitrate (bits/second) = Target size in bits / duration in seconds
     # Convert to kb/s = (Target size in bits / duration in seconds) / 1000
-    bitrate_bps = (target_mb * 1024 * 1024 * 8) / duration_seconds
-    bitrate_kbps = bitrate_bps / 1000
+    # Subtract some bits for audio overhead (estimate)
+    # Let's assume audio bitrate is fixed and adds to total.
+    # Audio bits/second = int(VIDEO_AUDIO_BITRATE[:-1]) * 1000 # '128k' -> 128000 bps
+    # Total target bits = target_mb * 1024*1024*8
+    # Audio total bits = audio_bitrate_bps * duration_seconds
+    # Video target bits = Total target bits - Audio total bits (ensure > 0)
+    # Video bitrate bps = Video target bits / duration_seconds
 
-    # FFmpeg expects bitrate usually as integers, rounded up
-    return max(500, int(bitrate_kbps)) # Ensure a minimum bitrate like 500 kbps
+    # A simpler approach: Target MB includes everything. Calculate average total bitrate needed.
+    total_bitrate_bps = (target_mb * 1024 * 1024 * 8) / duration_seconds
+    total_bitrate_kbps = total_bitrate_bps / 1000
+
+    # It's tricky to hit an exact size with ffmpeg bitrate mode due to overhead.
+    # A CRF approach is better for quality vs size, but bitrate is requested.
+    # We need a video bitrate that, when combined with audio, hits the total.
+    try:
+        audio_bitrate_kbps = int(VIDEO_AUDIO_BITRATE[:-1]) # Assumes format like '128k'
+    except (ValueError, TypeError):
+        audio_bitrate_kbps = 128 # Default if config is weird
+
+    # Estimate required video bitrate by subtracting audio bitrate
+    video_bitrate_kbps = total_bitrate_kbps - audio_bitrate_kbps
+
+    return max(500, int(video_bitrate_kbps)) # Ensure a minimum video bitrate
 
 def generate_ffmpeg_command(input_path, output_path, bitrate_kbps):
     """Generates the ffmpeg command for compression with NVENC."""
-    # Basic command structure, add audio settings from config
     ffmpeg_command = [
         'ffmpeg', '-y', # Overwrite output without asking
-        '-hwaccel', 'cuda', # Enable CUDA hardware acceleration
+        '-hwaccel', 'cuda', # Enable CUDA hardware acceleration (requires compatible GPU and build)
         '-i', input_path,
         '-c:v', 'h264_nvenc', # H.264 encoding with NVENC
         '-b:v', f'{bitrate_kbps}k', # Video bitrate in kb/s
-        '-preset', 'medium', # NVENC preset: slowest, slow, medium, fast, high, hp, lossless, ll, llhp, llhq
+        '-preset', 'medium', # NVENC preset
         '-profile:v', 'high', # H.264 profile
         '-map_metadata', '-1', # Remove metadata from input
 
@@ -284,6 +366,9 @@ def generate_ffmpeg_command(input_path, output_path, bitrate_kbps):
         '-b:a', VIDEO_AUDIO_BITRATE,
         '-ac', str(VIDEO_AUDIO_CHANNELS),
         '-ar', str(VIDEO_AUDIO_SAMPLE_RATE),
+         '-map', '0:v:0', # Map video stream 0 from input 0
+         '-map', '0:a:0?', # Map audio stream 0 from input 0 (if exists)
+
 
         output_path
     ]
@@ -291,120 +376,111 @@ def generate_ffmpeg_command(input_path, output_path, bitrate_kbps):
 
 def process_compression_queue():
     """Thread worker function to process compression tasks sequentially."""
-    global is_processing_compression
-    is_processing_compression = True
-    print("Compression processing thread started.")
+    print("Compression processing thread started and waiting for tasks.")
 
     while True:
-        try:
-            task = compression_queue.get(timeout=1) # Get task, wait max 1 second
-        except queue.Empty:
-            # Queue is empty, exit the loop if no more tasks for a while (or just keep running)
-            # Let's keep the thread alive and waiting
-            time.sleep(5) # Wait before checking again
-            continue
+        task = compression_queue.get() # Blocks until a task is available
 
         chat_id = task['chat_id']
         input_file = task['input_file']
         duration = task['duration']
         target_size_mb = task['target_size_mb']
-        original_message = task['original_message'] # Reference to the original message object
-        compression_status_msg_id = task['status_msg_id'] # ID of the message to update status
+        status_msg_id = task['status_msg_id']
+        original_filename = task['original_filename']
+        original_message_chat_id = task['original_message_chat_id']
+        original_message_id = task['original_message_id']
+
 
         print(f"Processing compression task for chat {chat_id}. Target size: {target_size_mb}MB")
+
+        # Re-check if task was cancelled while waiting in queue
+        if chat_id not in user_tasks or user_tasks[chat_id].get('state') == 'cancelled':
+             print(f"Task for chat {chat_id} was cancelled, skipping processing.")
+             compression_queue.task_done()
+             continue
+
+        user_tasks[chat_id]['state'] = 'compressing' # Update state in main dict
 
         compressed_file_path = None
         try:
             # Calculate bitrate
             bitrate_kbps = calculate_bitrate(target_size_mb, duration)
-            print(f"Calculated bitrate: {bitrate_kbps} kb/s")
+            print(f"Calculated video bitrate: {bitrate_kbps} kb/s")
 
             # Create temporary output file path
-            with tempfile.NamedTemporaryFile(suffix=f'_compressed.mp4', delete=False, dir=DOWNLOADS_DIR) as temp_file:
-                compressed_file_path = temp_file.name
+            # Use a unique name that includes part of the original filename
+            base_output_name = f"{chat_id}_{original_message_id}_{target_size_mb}MB"
+            # Append part of original filename, safely
+            safe_original_part = re.sub(r'[^a-zA-Z0-9_.-]', '', original_filename)
+            safe_original_part = safe_original_part[:20] # Limit length
+            if safe_original_part:
+                base_output_name = f"{base_output_name}_{safe_original_part}"
+
+            compressed_file_path = os.path.join(DOWNLOADS_DIR, f"{base_output_name}_compressed.mp4")
+
 
             # Generate and execute FFmpeg command
             ffmpeg_cmd = generate_ffmpeg_command(input_file, compressed_file_path, bitrate_kbps)
             print(f"Executing FFmpeg command: {' '.join(ffmpeg_cmd)}")
 
-            # Update status message
-            try:
-                app.edit_message_text(chat_id, compression_status_msg_id, f"⏳ جاري الضغط ({target_size_mb}MB) ...")
-            except Exception as e:
-                print(f"Error editing compression status message {compression_status_msg_id}: {e}")
+            # Update status message (using the async helper)
+            schedule_async_task(_edit_message(chat_id, status_msg_id, f"⏳ جاري الضغط ({target_size_mb}MB) ..."))
 
             # Run FFmpeg subprocess
-            ffmpeg_process = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, check=True, timeout=duration * 5) # Basic timeout
+            # Adding stderr=subprocess.PIPE to capture progress for future
+            # For now, just basic subprocess.run check
+            ffmpeg_process = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, check=True, timeout=duration * 10) # Increased timeout
+
 
             print("FFmpeg command executed successfully.")
-            # print(f"FFmpeg stdout:\n{ffmpeg_process.stdout}")
+            # print(f"FFmpeg stdout:\n{ffmpeg_process.stdout}") # Optional debug print
             # print(f"FFmpeg stderr:\n{ffmpeg_process.stderr}")
-
-            # Check output file size (optional sanity check)
-            compressed_size_mb = os.path.getsize(compressed_file_path) / (1024 * 1024)
-            print(f"Compressed file size: {compressed_size_mb:.2f} MB")
-            if compressed_size_mb > target_size_mb * 1.2: # Allow some tolerance (e.g., 20%)
-                 print(f"Warning: Compressed file size ({compressed_size_mb:.2f}MB) is significantly larger than target ({target_size_mb}MB).")
-                 # Decide if this should be treated as a failure. For now, proceed but log.
 
             # Upload compressed video to channel
             if CHANNEL_ID:
+                schedule_async_task(_send_message(chat_id, "⬆️ جاري الرفع إلى القناة...", reply_to_message_id=original_message_id)) # Notify user
+
                 try:
-                    upload_status_msg = app.send_message(chat_id, "⬆️ جاري الرفع إلى القناة...", reply_to_message_id=original_message.id) # Notify user
-                    # Upload to channel
-                    app.send_document(
-                        chat_id=CHANNEL_ID,
-                        document=compressed_file_path,
-                        caption=f"Compressed to ~{target_size_mb}MB | {os.path.basename(input_file)}" # Optional caption
-                        # No progress bar here for simplicity, could add one by subclassing and reading file handle
+                    # Use the helper coroutine for sending the document
+                    schedule_async_task(
+                         _send_document(
+                            chat_id=CHANNEL_ID,
+                            document=compressed_file_path,
+                            caption=f"Compressed to ~{target_size_mb}MB | {original_filename}",
+                             # Add file_name here if needed
+                         )
                     )
-                    try:
-                         upload_status_msg.edit_text("✅ تم الرفع إلى القناة بنجاح!")
-                    except Exception as e:
-                         print(f"Error editing final upload message: {e}")
 
-                    print(f"Compressed video uploaded to channel: {CHANNEL_ID}")
-                    app.edit_message_text(chat_id, compression_status_msg_id, "✅ تم الضغط والرفع إلى القناة بنجاح.")
+                    print(f"Compressed video upload scheduled to channel: {CHANNEL_ID}")
+                    schedule_async_task(_edit_message(chat_id, status_msg_id, f"✅ تم الضغط والرفع إلى القناة بنجاح. الحجم المستهدف: {target_size_mb}MB"))
 
-                except Exception as e:
-                    print(f"Error uploading compressed video to channel {CHANNEL_ID}: {e}")
-                    app.edit_message_text(chat_id, compression_status_msg_id, "❌ تم الضغط، ولكن فشل الرفع إلى القناة.")
+                except Exception as e: # This catch is for issues with _send_document itself, not the subprocess error
+                    print(f"Error scheduling upload to channel {CHANNEL_ID}: {e}")
+                    schedule_async_task(_edit_message(chat_id, status_msg_id, f"❌ تم الضغط، ولكن فشل الرفع إلى القناة: {e}"))
             else:
                 print("CHANNEL_ID not configured. Compressed video not sent to channel.")
-                app.edit_message_text(chat_id, compression_status_msg_id, "✅ تم الضغط بنجاح، ولكن لم يتم تهيئة قناة للرفع.")
+                schedule_async_task(_edit_message(chat_id, status_msg_id, f"✅ تم الضغط بنجاح، ولكن لم يتم تهيئة قناة للرفع."))
+
+        except FileNotFoundError:
+            print("Error: ffmpeg not found or NVENC not supported.")
+            error_text = "❌ فشل الضغط: أداة `ffmpeg` غير موجودة أو لا تدعم تسريع NVENC."
+            schedule_async_task(_edit_message(chat_id, status_msg_id, error_text))
 
         except subprocess.CalledProcessError as e:
             print("FFmpeg error occurred!")
-            print(f"FFmpeg stdout: {e.stdout}")
-            print(f"FFmpeg stderr: {e.stderr}")
-            error_text = f"❌ حدث خطأ أثناء ضغط الفيديو:\n`FFmpeg exited with code {e.returncode}`\nDetails:\n`{e.stderr[-500:]}`" # Last 500 chars
-            try:
-                app.edit_message_text(chat_id, compression_status_msg_id, error_text)
-            except Exception as edit_e:
-                print(f"Error editing error message {compression_status_msg_id}: {edit_e}")
-                try:
-                    app.send_message(chat_id, error_text, reply_to_message_id=original_message.id)
-                except Exception as send_e:
-                    print(f"Error sending error message: {send_e}")
-
-        except FileNotFoundError:
-            print("Error: ffmpeg not found. Please ensure it's installed and in your system's PATH with NVENC support.")
-            error_text = "❌ فشل الضغط: أداة `ffmpeg` غير موجودة على الخادم أو لا تدعم تسريع NVENC."
-            try:
-                 app.edit_message_text(chat_id, compression_status_msg_id, error_text)
-            except Exception as edit_e:
-                 print(f"Error editing error message: {edit_e}")
+            stderr_output = e.stderr.strip()
+            print(f"FFmpeg stderr: {stderr_output}")
+            error_text = f"❌ حدث خطأ أثناء ضغط الفيديو:\n`FFmpeg exited with code {e.returncode}`\nDetails:\n`{stderr_output[-500:]}`" # Last 500 chars
+            schedule_async_task(_edit_message(chat_id, status_msg_id, error_text))
 
         except Exception as e:
-            print(f"General error during compression or upload: {e}")
+            print(f"General error during compression: {e}")
             error_text = f"❌ حدث خطأ غير متوقع أثناء الضغط: {e}"
-            try:
-                 app.edit_message_text(chat_id, compression_status_msg_id, error_text)
-            except Exception as edit_e:
-                 print(f"Error editing error message: {edit_e}")
+            schedule_async_task(_edit_message(chat_id, status_msg_id, error_text))
 
         finally:
             # Clean up temp files related to this task
+            # Check if files exist before attempting deletion
             if input_file and os.path.exists(input_file):
                 try:
                     os.remove(input_file)
@@ -418,117 +494,51 @@ def process_compression_queue():
                 except Exception as e:
                     print(f"Error deleting compressed temp file {compressed_file_path}: {e}")
 
-            # Mark user as idle after task completion (success or failure)
-            if chat_id in user_tasks and 'state' in user_tasks[chat_id] and user_tasks[chat_id]['state'] != 'cancelled':
-                user_tasks[chat_id]['state'] = 'idle'
-                # Clean up remaining task data from user_tasks if it was the last step
-                # Need to be careful if other states might still use it.
-                # Let's keep it until the user starts a new task or timer expires if we add one.
-                # For now, mark idle. Data cleanup happens on cancel or start of new task.
+            # Remove task data from user_tasks only after compression attempt completes (success or failure)
+            user_tasks.pop(chat_id, None) # Clean up this user's state data
+
+            compression_queue.task_done() # Indicate task is done for the queue
+            print(f"Compression task finished for chat {chat_id}. Queue size remaining: {compression_queue.qsize()}")
 
 
-        compression_queue.task_done() # Indicate task is done for the queue
-
-    # is_processing_compression remains True, the thread is designed to keep running and waiting for tasks
-
-def handle_error_cleanup(chat_id, error_message, delete_file=False):
-     """Handles cleanup and notifies user in case of an error during download or initial steps."""
-     print(f"Handling error for chat {chat_id}: {error_message}")
-     task_data = user_tasks.pop(chat_id, None)
-     if task_data:
-          file_path = task_data.get('file_path')
-          progress_msg_id = task_data.get('download_msg_id')
-          action_msg_id = task_data.get('action_msg_id')
-
-          # Delete progress message if it exists
-          if progress_msg_id:
-               try:
-                    app.delete_messages(chat_id, progress_msg_id)
-               except Exception as e:
-                    print(f"Error deleting progress message {progress_msg_id} on error: {e}")
-          # Delete action message if it exists
-          if action_msg_id:
-              try:
-                  app.delete_messages(chat_id, action_msg_id)
-              except Exception as e:
-                  print(f"Error deleting action message {action_msg_id} on error: {e}")
-
-          # Delete temp file if exists and required
-          if delete_file and file_path and os.path.exists(file_path):
-               try:
-                    os.remove(file_path)
-                    print(f"Deleted temp file {file_path} during error cleanup.")
-               except Exception as e:
-                    print(f"Error deleting temp file {file_path} on error: {e}")
-
-          # Notify user of the error
-          try:
-               app.send_message(chat_id, error_message)
-          except Exception as e:
-               print(f"Error sending error message to user {chat_id}: {e}")
-
-def cancel_task(chat_id, user_cancelled=True):
-    """Cancels the current task for a user, cleans up resources."""
-    print(f"Cancelling task for chat {chat_id}, user_cancelled: {user_cancelled}")
-    task_data = user_tasks.pop(chat_id, None)
-    if task_data:
-        file_path = task_data.get('file_path')
-        download_msg_id = task_data.get('download_msg_id')
-        action_msg_id = task_data.get('action_msg_id')
-
-        # Note: We cannot easily stop aria2c or ffmpeg process if it's already running.
-        # We just mark the state as cancelled, delete temp files, and notify the user.
-        # The external process might continue running for a bit before finishing.
-
-        # Delete relevant messages
-        if download_msg_id:
-            try:
-                app.delete_messages(chat_id, download_msg_id)
-            except Exception as e:
-                print(f"Error deleting download message {download_msg_id} on cancel: {e}")
-        if action_msg_id:
-            try:
-                 app.delete_messages(chat_id, action_msg_id)
-            except Exception as e:
-                 print(f"Error deleting action message {action_msg_id} on cancel: {e}")
-
-
-        # Clean up temp file
-        if file_path and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-                print(f"Deleted temp file {file_path} on cancel.")
-            except Exception as e:
-                print(f"Error deleting temp file {file_path} on cancel: {e}")
-
-        # Notify user
-        if user_cancelled:
-             try:
-                  app.send_message(chat_id, "✅ تم إلغاء العملية.")
-             except Exception as e:
-                  print(f"Error sending cancel message to user {chat_id}: {e}")
-
-        # If the task was in the compression queue, it will process and see the file is gone, handling it there.
-        # Or we could try to remove it from the queue, but that's harder with a queue.Queue.
-
-# --- Pyrogram Handlers ---
+# --- Pyrogram Handlers (async def) ---
 
 # Initialize the Bot Client
-app = Client("video_compressor_bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
+# Auto-detection of loop is default, but can be explicit: work_dir needs to be separate for concurrent tasks
+app = Client(
+    "video_compressor_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=API_TOKEN,
+    workdir="./pyrogram_sessions" # Separate directory for session files
+)
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(client: Client, message: Message):
     """Handles the /start command."""
-    await message.reply_text("أرسل لي رابط فيديو من قناة تيليجرام عامة بالصيغة التالية:\n`https://t.me/<اسم_القناة>/<رقم_الرسالة>`")
+    # Cancel any ongoing task for this user before starting a new one
+    cancel_task(message.chat.id)
+    await message.reply_text("👋 مرحباً! أنا بوت لضغط الفيديو. أرسل لي رابط فيديو من قناة تيليجرام عامة بالصيغة التالية:\n`https://t.me/<اسم_القناة>/<رقم_الرسالة>`\n\nأو أرسل لي فيديو مباشراً (ميزة تجريبية).\n\nلتثبيت الادوات في Google Colab انسخ السطر التالي في الخليه الأولى:\n`!pip install -U yt-dlp aria2 ffmpeg-python pyrogram && apt-get update && apt-get install -y aria2 ffmpeg`\n**ملاحظة:** قد تحتاج لتثبيت FFmpeg مع دعم CUDA يدوياً على الخادم للاستفادة من التسريع.") # Added installation hint for Colab
 
-@app.on_message(filters.text & filters.private)
-async def handle_message(client: Client, message: Message):
-    """Handles incoming text messages."""
+@app.on_message(filters.command("cancel") & filters.private)
+async def cancel_command(client: Client, message: Message):
+    """Handles the /cancel command."""
     chat_id = message.chat.id
-    text = message.text.strip()
+    if chat_id in user_tasks:
+        cancel_task(chat_id, user_cancelled=True)
+        await message.reply_text("❌ تم إلغاء العملية الجارية.", quote=True)
+    else:
+        await message.reply_text("لا يوجد عملية جارية لإلغائها.", quote=True)
 
-    # Check if user is expected to send the target size
-    if chat_id in user_tasks and user_tasks[chat_id]['state'] == 'waiting_size':
+
+@app.on_message((filters.text | filters.video | filters.animation) & filters.private)
+async def handle_message(client: Client, message: Message):
+    """Handles incoming text messages or direct videos."""
+    chat_id = message.chat.id
+    text = message.text.strip() if message.text else None
+
+    # --- Handle target size input (if state is waiting_size) ---
+    if chat_id in user_tasks and user_tasks[chat_id]['state'] == 'waiting_size' and text:
         try:
             target_size_mb = int(text)
             if target_size_mb <= 0:
@@ -536,130 +546,176 @@ async def handle_message(client: Client, message: Message):
                  return
 
             task_data = user_tasks[chat_id]
-            input_file = task_data['file_path']
-            duration = task_data['duration']
-            original_message = task_data['original_message']
+            # Use stored original message info for reply_to
+            original_message_id = task_data['original_message_id']
+            original_message_chat_id = task_data['original_message_chat_id']
 
-            # Reset state immediately
-            user_tasks[chat_id]['state'] = 'idle'
+            # Reset state immediately to prevent user sending size again
+            user_tasks[chat_id]['state'] = 'queuing' # New temporary state
 
             # Queue the compression task
-            # Create a temporary status message to be updated during compression
-            status_msg = await message.reply_text("⌛️ جارٍ إضافة المهمة إلى قائمة الانتظار...")
+            status_msg = await message.reply_text("⌛️ جارٍ إضافة المهمة إلى قائمة الانتظار...", reply_to_message_id=original_message_id)
+
+            # Store the status message ID and other relevant data for the compression thread
+            task_data['target_size_mb'] = target_size_mb
+            task_data['status_msg_id'] = status_msg.id
+            # The rest of task_data (file_path, duration, etc.) should already be there
+            # We copy relevant data for the queue item
             compression_task = {
                 'chat_id': chat_id,
-                'input_file': input_file,
-                'duration': duration,
+                'input_file': task_data['file_path'],
+                'duration': task_data['duration'],
                 'target_size_mb': target_size_mb,
-                'original_message': original_message,
-                'status_msg_id': status_msg.id
+                'status_msg_id': status_msg.id,
+                'original_filename': task_data['original_filename'],
+                'original_message_chat_id': original_message_chat_id,
+                'original_message_id': original_message_id,
             }
             compression_queue.put(compression_task)
-            await status_msg.edit_text("✅ تم إضافة مهمة الضغط إلى قائمة الانتظار. سيتم معالجتها قريباً.")
 
-            # Start the compression thread if it's not running
-            global processing_thread
-            if not is_processing_compression or (processing_thread and not processing_thread.is_alive()):
-                processing_thread = threading.Thread(target=process_compression_queue, daemon=True)
-                processing_thread.start()
+            queue_size = compression_queue.qsize()
+            await status_msg.edit_text(f"✅ تم إضافة مهمة الضغط إلى قائمة الانتظار. ترتيبك في قائمة الانتظار: **{queue_size}**")
+
+            # The compression processing thread is started at bot startup and runs continuously
 
         except ValueError:
             await message.reply_text("هذا ليس رقماً صحيحاً. يرجى إرسال حجم الفيديو المطلوب بالميجابايت كـ **رقم فقط** (مثال: `50`).", quote=True)
         except Exception as e:
             print(f"Error processing target size input for chat {chat_id}: {e}")
-            await message.reply_text("حدث خطأ أثناء معالجة طلبك.", quote=True)
-            handle_error_cleanup(chat_id, f"حدث خطأ: {e}", delete_file=False) # Keep file for now, user might retry
+            # Clean up task data on error
+            cancel_task(chat_id, user_cancelled=False)
+            await message.reply_text(f"حدث خطأ أثناء معالجة طلبك للحجم: {e}", quote=True)
 
+    # --- Handle new link or direct video ---
+    elif chat_id in user_tasks and user_tasks[chat_id]['state'] != 'idle':
+        await message.reply_text("أنت قيد المعالجة حالياً. يرجى الانتظار أو استخدام /cancel لإلغاء العملية الجارية.", quote=True)
+        return
 
-    # Check if the message is a Telegram link
-    elif text.startswith("https://t.me/"):
-        if chat_id in user_tasks and user_tasks[chat_id]['state'] != 'idle':
-            await message.reply_text("أنت قيد المعالجة حالياً. يرجى الانتظار أو استخدام أمر الإلغاء إذا كان متاحاً.", quote=True)
-            return
+    elif text and text.startswith("https://t.me/"):
+        # Cancel any stale state for this user just in case
+        cancel_task(chat_id)
 
         parse_result = parse_telegram_link(text)
         if not parse_result:
             await message.reply_text("صيغة الرابط غير صحيحة. يرجى إرسال رابط بالصيغة التالية:\n`https://t.me/<اسم_القناة>/<رقم_الرسالة>`", quote=True)
             return
 
-        channel_username, message_id = parse_result
-        print(f"Received Telegram link: Channel={channel_username}, Message ID={message_id}")
+        channel_username, message_id_str = parse_result
+        print(f"Received Telegram link: Channel={channel_username}, Message ID={message_id_str}")
+        # Store original message details for future replies
+        original_message_id = message.id
+        original_message_chat_id = chat_id
 
-        # Start processing the link
+
         try:
             # Send an initial processing message
             process_msg = await message.reply_text("🔍 جارٍ استخلاص معلومات الفيديو...", quote=True)
-            user_tasks[chat_id] = {
-                'state': 'fetching_info',
-                'link': text,
-                'download_msg_id': process_msg.id,
-                'action_msg_id': None,
-                'file_path': None, # Will be set after getting URL
-                'duration': None,  # Will be set after getting info
-                'original_filename': None, # Will be set after getting info
-                'original_message': message # Store original message object
-            }
 
             # --- Step 2a: Get Metadata (Duration, Original Filename) ---
-            duration, original_filename = get_video_metadata(text)
-            if duration is None:
-                 handle_error_cleanup(chat_id, "❌ فشل استخلاص معلومات الفيديو. قد يكون الرابط غير صحيح أو القناة خاصة.")
+            # This is synchronous, runs in the main async event loop, which is fine for short subprocess calls
+            duration, original_filename, metadata_error = get_video_metadata(text)
+            if metadata_error:
+                 await process_msg.edit_text(f"❌ فشل استخلاص معلومات الفيديو:\n`{metadata_error}`\n\nيرجى التأكد من صحة الرابط وأن القناة عامة وليست خاصة.")
+                 # No task data created yet, just return
                  return
 
-            user_tasks[chat_id]['duration'] = duration
-            user_tasks[chat_id]['original_filename'] = original_filename
+            if duration <= 0:
+                 await process_msg.edit_text(f"⚠️ فشل استخلاص مدة الفيديو أو المدة صفر. لا يمكن المتابعة.\n\nيرجى التأكد من أن الرابط يحتوي على فيديو صالح.")
+                 return
+
+            await process_msg.edit_text("✅ تم استخلاص المعلومات بنجاح. جارٍ الحصول على رابط التنزيل...")
+
 
             # --- Step 2b: Get Direct Download URL ---
-            download_url = get_download_url_with_yt_dlp(text)
-            if not download_url:
-                handle_error_cleanup(chat_id, "❌ فشل الحصول على رابط التنزيل المباشر للفيديو.")
+            # Synchronous call
+            download_url, url_error = get_download_url_with_yt_dlp(text)
+            if url_error:
+                await process_msg.edit_text(f"❌ فشل الحصول على رابط التنزيل المباشر:\n`{url_error}`\n\nيرجى التأكد من أن الفيديو متاح للتنزيل عبر yt-dlp.")
+                # No task data created yet, just return
                 return
 
-            # --- Step 2c: Download using aria2c ---
+
+            await process_msg.edit_text("✅ تم استخلاص الرابط. جارٍ التحضير للتنزيل...")
+
+            # --- Step 2c: Setup for Download using aria2c ---
             # Generate a unique temporary file path
-            temp_output_file = os.path.join(DOWNLOADS_DIR, f"{chat_id}_{message.id}_temp_download_{os.path.basename(download_url).split('?')[0]}")
-            # Ensure unique name if a simple name like "video" is returned by yt-dlp
-            if os.path.basename(temp_output_file) in ["video", "file", "stream"]: # Avoid generic names that clash easily
-                temp_output_file += f"_{int(time.time())}"
+            # We need a name based on the original filename but safe
+            base_download_name = f"{chat_id}_{original_message_id}"
+            safe_original_part = re.sub(r'[^a-zA-Z0-9_.-]', '_', original_filename)
+            safe_original_part = safe_original_part[:30] # Limit length for safety
+            temp_output_file = os.path.join(DOWNLOADS_DIR, f"{base_download_name}_{safe_original_part}_temp_download.mp4") # Assuming mp4 for most cases
 
-            user_tasks[chat_id]['file_path'] = temp_output_file # Store the expected final path
 
-            await process_msg.edit_text("✅ تم استخلاص الرابط. جارٍ بدء التنزيل...")
+            # Store task data *before* starting the thread
+            user_tasks[chat_id] = {
+                'state': 'downloading',
+                'link': text,
+                'download_url': download_url, # Store the extracted URL
+                'file_path': temp_output_file, # Store the expected final path
+                'duration': duration,
+                'original_filename': original_filename,
+                'download_msg_id': process_msg.id,
+                'action_msg_id': None, # Will be set later
+                'status_msg_id': None, # Will be set later for compression
+                'original_message_chat_id': original_message_chat_id,
+                'original_message_id': original_message_id,
+            }
 
-            # Run aria2c in a separate thread to not block the main handler
+            # Edit message to indicate downloading state
+            await process_msg.edit_text("⬇️ جارٍ بدء التنزيل...")
+
+
+            # Run aria2c in a separate thread to not block the main handler loop
+            # The thread function will update progress and handle next steps (actions)
             download_thread = threading.Thread(
                 target=run_aria2c_and_report_progress,
-                args=(chat_id, text, download_url, user_tasks[chat_id]['file_path'], process_msg.id),
-                daemon=True # Thread exits if main program exits
+                args=(chat_id,), # Pass chat_id only, function will fetch task_data
+                daemon=True
             )
             download_thread.start()
 
+
         except Exception as e:
             print(f"Error handling link {text} for chat {chat_id}: {e}")
-            handle_error_cleanup(chat_id, f"حدث خطأ غير متوقع: {e}", delete_file=False) # File likely not created yet
+            # General unexpected error during initial phase
+            if chat_id in user_tasks: # Clean up task data if it was partially created
+                 cancel_task(chat_id, user_cancelled=False) # Clean up data and files
+            await message.reply_text(f"حدث خطأ غير متوقع أثناء المعالجة: {e}")
 
-    # If text is not a link and not a number when waiting for size
-    elif chat_id in user_tasks and user_tasks[chat_id]['state'] == 'waiting_size':
-         # User sent text, but not a number. The 'waiting_size' block handled this already.
-         pass # Do nothing here
-    else:
-        # Any other random text
-        await message.reply_text("أرسل لي رابط فيديو من قناة تيليجرام عامة بالصيغة التالية:\n`https://t.me/<اسم_القناة>/<رقم_الرسالة>`\n\nأو أرسل لي فيديو مباشراً.", quote=True)
+    # --- Handle direct video or animation upload ---
+    elif message.video or message.animation:
+         # This part handles direct file uploads as in your original script
+         # It needs to be integrated carefully with the state machine and queue.
+         # For simplicity in this update focused on links and threading,
+         # we'll add a placeholder or basic logic. A full implementation
+         # would store file_id, download using client.download_media (potentially in a thread)
+         # and then follow the same state logic (waiting_action, etc.)
 
+         await message.reply_text("ميزة رفع الفيديو المباشر قيد التطوير حالياً. يرجى استخدام روابط تيليجرام حالياً.", quote=True)
+         # To implement this fully:
+         # 1. Download the media using client.download_media (might block, consider thread).
+         # 2. Get duration/filename from message.video/animation object.
+         # 3. Store file_path, duration, filename in user_tasks.
+         # 4. Change state to 'waiting_action' and send inline keyboard.
+         # 5. Follow existing callback logic for 'upload_raw' or 'compress'.
+
+    # --- Handle any other text input when not waiting for size ---
+    elif text: # Only if it was a text message that didn't match other conditions
+        await message.reply_text("أرسل لي رابط فيديو من قناة تيليجرام عامة بالصيغة التالية:\n`https://t.me/<اسم_القناة>/<رقم_الرسالة>`\n\nأو أرسل لي فيديو مباشراً (قيد التطوير).")
 
 @app.on_callback_query()
 async def handle_callback(client: Client, callback_query):
     """Handles inline keyboard button presses."""
     data = callback_query.data
     chat_id = callback_query.message.chat.id
-    message_id = callback_query.message.id # ID of the action message (not download progress)
+    message_id = callback_query.message.id # ID of the action message
 
-    # Ensure the callback is for a known, active task and message
-    if chat_id not in user_tasks or user_tasks[chat_id]['action_msg_id'] != message_id:
+    # Ensure the callback is for a known, active task and action message
+    # Note: user_tasks['action_msg_id'] is NOT set for now. We rely on the state.
+    if chat_id not in user_tasks or user_tasks[chat_id]['state'] != 'waiting_action':
         print(f"Callback received for unknown/stale task: {data} from chat {chat_id}, message {message_id}")
         await callback_query.answer("انتهت صلاحية هذا الطلب أو تم معالجته مسبقاً.", show_alert=True)
         try:
-             # Try to delete the outdated action message
              await callback_query.message.delete()
         except Exception:
              pass # Ignore errors if message is already gone
@@ -671,7 +727,10 @@ async def handle_callback(client: Client, callback_query):
     file_path = task_data['file_path']
     duration = task_data['duration']
     original_filename = task_data['original_filename']
-    original_message = task_data['original_message'] # Original user message (for reply_to)
+    # Use stored original message info for reply_to
+    original_message_id = task_data['original_message_id']
+    original_message_chat_id = task_data['original_message_chat_id']
+
 
     # Delete the action message after processing the choice
     try:
@@ -684,26 +743,25 @@ async def handle_callback(client: Client, callback_query):
         user_tasks[chat_id]['state'] = 'uploading_raw'
 
         if not os.path.exists(file_path):
-            handle_error_cleanup(chat_id, "❌ خطأ: لم يتم العثور على الملف الأصلي للرفع.", delete_file=False) # File might already be gone or download failed earlier
+            await _send_message(chat_id, "❌ خطأ: لم يتم العثور على الملف الأصلي للرفع.")
+            cancel_task(chat_id, user_cancelled=False) # Clean task data
             return
 
         try:
-            # Send status message
-            upload_status_msg = await client.send_message(chat_id, "⬆️ جارٍ رفع الفيديو الأصلي...", reply_to_message_id=original_message.id)
+            upload_status_msg = await client.send_message(chat_id, "⬆️ جارٍ رفع الفيديو الأصلي...", reply_to_message_id=original_message_id)
 
             await client.send_document(
                 chat_id=chat_id,
                 document=file_path,
                 file_name=original_filename + os.path.splitext(file_path)[1], # Use original filename with correct extension
-                # caption="الفيديو الأصلي", # Optional caption
-                 # No progress bar for simplicity here
+                reply_to_message_id=original_message_id
             )
             await upload_status_msg.edit_text("✅ تم رفع الفيديو الأصلي بنجاح!")
             print(f"Raw video uploaded successfully for chat {chat_id}")
 
         except Exception as e:
             print(f"Error uploading raw video for chat {chat_id}: {e}")
-            await client.send_message(chat_id, f"❌ فشل رفع الفيديو الأصلي: {e}")
+            await client.send_message(chat_id, f"❌ فشل رفع الفيديو الأصلي: {e}", reply_to_message_id=original_message_id)
 
         finally:
             # Clean up temp file after upload (success or failure)
@@ -726,11 +784,58 @@ async def handle_callback(client: Client, callback_query):
         await client.send_message(
             chat_id,
             "كم ميجابايت تود أن يكون حجم الفيديو المضغوط؟ أرسل **الرقم فقط** (مثال: `50`)",
-            reply_to_message_id=original_message.id # Reply to the original user message
+            reply_to_message_id=original_message_id # Reply to the original user message
         )
 
-    # We don't need a separate cancel button here, as it wasn't specified in the requirements
-    # If we had one, it would call cancel_task(chat_id)
+def cancel_task(chat_id, user_cancelled=True):
+    """Cancels the current task for a user, cleans up resources."""
+    print(f"Attempting to cancel task for chat {chat_id}, user_cancelled: {user_cancelled}")
+    task_data = user_tasks.get(chat_id)
+
+    if task_data:
+        # Mark the task as cancelled to signal threads (they should check this state)
+        task_data['state'] = 'cancelled'
+        print(f"Task for chat {chat_id} marked as cancelled.")
+
+        # Try to delete associated messages asynchronously
+        message_ids_to_delete = []
+        if task_data.get('download_msg_id'): message_ids_to_delete.append(task_data['download_msg_id'])
+        if task_data.get('action_msg_id'): message_ids_to_delete.append(task_data['action_msg_id'])
+        if task_data.get('status_msg_id'): message_ids_to_delete.append(task_data['status_msg_id'])
+
+        if message_ids_to_delete:
+            # Schedule deletion using the event loop
+            schedule_async_task(_delete_messages(chat_id, message_ids_to_delete))
+
+
+        # Clean up temp file asynchronously
+        file_path = task_data.get('file_path')
+        if file_path and os.path.exists(file_path):
+            # Schedule file deletion using the event loop or run directly if it's safe/needed immediately
+            # Deleting from a thread is generally safe, but might interfere if subprocess is still using it.
+            # Let the threaded functions (aria2c, ffmpeg) handle their own file cleanup in their 'finally' blocks
+            # based on the 'cancelled' state or process exit.
+            # Removing the manual deletion from here. Thread cleanup is more reliable.
+             pass
+             # try:
+             #      os.remove(file_path)
+             #      print(f"Deleted temp file {file_path} on cancel.")
+             # except Exception as e:
+             #      print(f"Error deleting temp file {file_path} on cancel: {e}")
+
+
+        # Notify user
+        if user_cancelled:
+             # Schedule sending message using the event loop
+             schedule_async_task(_send_message(chat_id, "✅ تم إلغاء العملية.", reply_to_message_id=task_data.get('original_message_id')))
+
+        # Remove the task data from the global dictionary
+        user_tasks.pop(chat_id, None)
+        print(f"Task data for chat {chat_id} removed from user_tasks.")
+    else:
+        if user_cancelled: # Only message if user explicitly cancelled and there was nothing
+             print(f"Cancel requested for chat {chat_id} but no task found.")
+             # Optionally send a message saying no task is active
 
 # --- Main Execution ---
 
@@ -740,10 +845,12 @@ if __name__ == "__main__":
     print("Starting Pyrogram client...")
 
     # Start the compression processing thread on startup, make it daemon
-    # It will wait for tasks in the queue
+    # It will wait for tasks in the queue forever (until main program exits)
     processing_thread = threading.Thread(target=process_compression_queue, daemon=True)
     processing_thread.start()
-    is_processing_compression = True # Flag to indicate the thread is running
 
-    app.run()
+    # Pyrogram client needs to run the main event loop
+    # It will block until interrupted (e.g., Ctrl+C)
+    app.run() # This is a blocking call that starts the async event loop
+
     print("Bot stopped.")
