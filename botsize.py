@@ -10,6 +10,12 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import (API_ID, API_HASH, API_TOKEN, CHANNEL_ID,
                     VIDEO_CODEC, VIDEO_PIXEL_FORMAT, VIDEO_AUDIO_CODEC,
                     VIDEO_AUDIO_BITRATE, VIDEO_AUDIO_CHANNELS, VIDEO_AUDIO_SAMPLE_RATE)
+app = Client(
+    "botsize",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=API_TOKEN
+)
 
 # --- إعداد المسارات والمتغيرات ---
 DOWNLOADS_DIR = "./downloads"
@@ -210,13 +216,6 @@ async def handle_target_size(client, message):
 async def start(client, message):
     await message.reply_text("👋 أرسل لي فيديو وسيتم ضغطه بالحجم الذي تختاره (أرسل الفيديو ثم الحجم المطلوب بالميجابايت).")
 
-# --- تشغيل البوت ---
-app = Client(
-    "botsize",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=API_TOKEN
-)
 
 if __name__ == "__main__":
     app.run()
