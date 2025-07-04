@@ -1,4 +1,3 @@
---- START OF FILE bot.py ---
 import os
 import re
 import tempfile
