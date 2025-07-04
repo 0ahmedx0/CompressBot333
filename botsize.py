@@ -108,14 +108,21 @@ async def handle_video(client, message):
     try:
         file_id = message.video.file_id if message.video else message.animation.file_id
 
-        # السطر الصحيح للنسخ التي تعيد async_generator
-        async for file_info in client.get_file(file_id):
-            break
+        file_info = await client.get_file(file_id)
+        print("file_info:", file_info)
+        print("type:", type(file_info))
+
+        if isinstance(file_info, str):
+            await message.reply_text("❌ لم أستطع جلب معلومات الفيديو من تيليجرام. قد يكون هناك خطأ في النسخة أو في الملف.")
+            return
 
         file_path = file_info.file_path
         file_name = os.path.basename(file_path)
         direct_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_path}"
         local_path = f"{DOWNLOADS_DIR}/{file_name}"
+
+        # ... أكمل كودك كالمعتاد
+
 
         print(f"📥 Downloading from: {direct_url}")
 
@@ -182,7 +189,7 @@ async def handle_video(client, message):
 
     except Exception as e:
         print(f"❌ Error in handle_video: {e}")
-        await message.reply_text("حدث خطأ أثناء تحميل الفيديو. حاول مرة أخرى.")
+        await message.reply_text(f"حدث خطأ أثناء تحميل الفيديو: {e}")
 
 # --- التقاط رقم الحجم من المستخدم ووضعه في قائمة الانتظار ---
 @app.on_message(filters.text & filters.private)
