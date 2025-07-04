@@ -174,7 +174,8 @@ def handle_video(client, message):
     file = client.download_media(
         message.video.file_id if message.video else message.animation.file_id,
         file_name=f"{DOWNLOADS_DIR}/",
-        progress=download_progress
+        progress=download_progress,
+        block=False  # يجعل التنزيل غير متزامن ويسرّع العملية
     )
 
     # التحقق من وجود الملف بعد التنزيل
