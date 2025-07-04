@@ -160,12 +160,16 @@ def get_video_metadata(link):
     """Uses yt-dlp to get video metadata (like duration) from a Telegram link."""
     print(f"Getting metadata for: {link}")
     try:
-        # Removed --force-run-downloader
         result = subprocess.run(
-            ['yt-dlp', '--dump-json', link], # Removed --force-run-downloader
-            capture_output=True, text=True, check=True, timeout=60
+            ['yt-dlp', '-q', '--dump-json', link], # Added -q
+            capture_output=True, text=True, check=True, timeout=60,
+            stderr=subprocess.PIPE # Capture stderr separately
         )
-        metadata = json.loads(result.stdout)
+        # Check stderr first for errors/warnings before processing stdout
+        if result.stderr:
+            print(f"yt-dlp stderr (metadata): {result.stderr.strip()}") # Log warnings/errors
+
+        metadata = json.loads(result.stdout.strip()) # strip() to remove leading/trailing whitespace
         duration = int(metadata.get('duration', 0))
         original_filename = metadata.get('title') or metadata.get('id') or 'video'
         original_filename = re.sub(r'[\\/:*?"<>|]', '_', original_filename)
@@ -173,10 +177,14 @@ def get_video_metadata(link):
     except FileNotFoundError:
         return None, None, "[Errno 2] yt-dlp command not found. Please ensure yt-dlp is installed and in PATH."
     except subprocess.CalledProcessError as e:
-        error_msg = f"yt-dlp metadata error: {e.stderr.strip()}"
+        error_msg = f"yt-dlp metadata error (code {e.returncode}): {e.stderr.strip()}"
         print(error_msg)
         return None, None, error_msg
-    except (json.JSONDecodeError, KeyError, ValueError, Exception) as e:
+    except json.JSONDecodeError as e:
+        error_msg = f"Error decoding yt-dlp JSON metadata: {e}\nyt-dlp stdout:\n{result.stdout[:500]}..." # Include part of stdout
+        print(error_msg)
+        return None, None, error_msg
+    except Exception as e:
         error_msg = f"Error processing yt-dlp metadata: {e}"
         print(error_msg)
         return None, None, error_msg
@@ -185,27 +193,35 @@ def get_download_url_with_yt_dlp(link):
     """Uses yt-dlp to extract the direct download URL from a Telegram link."""
     print(f"Getting download URL for: {link}")
     try:
-         # Removed --force-run-downloader
         result = subprocess.run(
-            ['yt-dlp', '--get-url', link], # Removed --force-run-downloader
-            capture_output=True, text=True, check=True, timeout=60
+            ['yt-dlp', '-q', '--get-url', link], # Added -q
+            capture_output=True, text=True, check=True, timeout=60,
+            stderr=subprocess.PIPE # Capture stderr separately
         )
+        # Check stderr first for errors/warnings
+        if result.stderr:
+             print(f"yt-dlp stderr (get-url): {result.stderr.strip()}") # Log warnings/errors
+
         url = result.stdout.strip()
         if not url:
-             return None, "yt-dlp returned empty URL."
+             # yt-dlp might succeed but find no suitable URL
+             if result.stderr:
+                 return None, f"yt-dlp returned empty URL. stderr: {result.stderr.strip()}"
+             else:
+                 return None, "yt-dlp returned empty URL."
         print(f"Extracted URL: {url[:100]}...")
         return url, None
     except FileNotFoundError:
          return None, "[Errno 2] yt-dlp command not found. Please ensure yt-dlp is installed and in PATH."
     except subprocess.CalledProcessError as e:
-        error_msg = f"yt-dlp get-url error: {e.stderr.strip()}"
+        error_msg = f"yt-dlp get-url error (code {e.returncode}): {e.stderr.strip()}"
         print(error_msg)
         return None, error_msg
     except Exception as e:
         error_msg = f"Error during URL extraction: {e}"
         print(error_msg)
         return None, error_msg
-    
+
 def run_aria2c_and_report_progress(chat_id):
     """Runs aria2c and edits a Telegram message to show progress.
        This runs in a separate thread."""
