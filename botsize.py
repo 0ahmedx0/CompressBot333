@@ -385,27 +385,30 @@ def calculate_bitrate(target_mb, duration_seconds):
     return video_bitrate_kbps
 
 def generate_ffmpeg_command(input_path, output_path, bitrate_kbps):
-    """Generates the ffmpeg command for compression with NVENC."""
+    """Generates the ffmpeg command for compression (using libx264 - CPU based)."""
     ffmpeg_command = [
-        'ffmpeg', '-y', # Overwrite output without asking
-        '-hwaccel', 'cuda', # Enable CUDA hardware acceleration (requires compatible GPU and build)
+        'ffmpeg', '-y',
+        # Removed -hwaccel cuda
         '-i', input_path,
-        '-c:v', 'h264_nvenc', # H.264 encoding with NVENC
-        '-b:v', f'{bitrate_kbps}k', # Video bitrate in kb/s
-        '-preset', 'medium', # NVENC preset
-        '-profile:v', 'high', # H.264 profile
-        '-map_metadata', '-1', # Remove metadata from input
+        '-c:v', 'libx264', # Changed codec to libx264 (CPU based)
+        '-b:v', f'{bitrate_kbps}k',
+        '-preset', 'medium', # x264 presets: ultrafast, superfast, fast, medium, slow, slower, veryslow
+        '-profile:v', 'high',
+        '-map_metadata', '-1',
 
         # Audio settings from config
         '-c:a', VIDEO_AUDIO_CODEC,
         '-b:a', VIDEO_AUDIO_BITRATE,
         '-ac', str(VIDEO_AUDIO_CHANNELS),
         '-ar', str(VIDEO_AUDIO_SAMPLE_RATE),
-        '-map', '0:v:0', # Map video stream 0 from input 0
-        '-map', '0:a:0?', # Map audio stream 0 from input 0 (if exists)
+        '-map', '0:v:0',
+        '-map', '0:a:0?',
 
         output_path
     ]
+    # Note: if you want to use NVENC when available and fallback to libx264 otherwise,
+    # the logic to build the command needs to check for NVENC support first (e.g. via ffmpeg -encoders)
+    # or handle the subprocess error for CUDA and retry with libx264.
     return ffmpeg_command
 
 def process_compression_queue():
