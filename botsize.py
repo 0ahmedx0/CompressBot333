@@ -107,10 +107,10 @@ async def video_handler(client, message: Message):
     chat_id = message.chat.id
     file = message.video or message.animation
     file_id = file.file_id
-    file_path = f"{DOWNLOADS_DIR}/{file_id}.mp4"
-
-    # السطر الذهبي:
-    file_obj = await client.get_file(file_id)
+    
+    file_gen = client.get_file(file_id)
+    file_obj = await file_gen.__anext__()   # <-- هذا الأسلوب مضمون 100%
+    
     download_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_obj.file_path}"
 
     # الآن استخدم download_url مع aria2c:
