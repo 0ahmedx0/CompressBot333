@@ -105,77 +105,44 @@ def process_queue():
 # --- استقبال الفيديو وتحميله عبر aria2c مع عرض التقدم ---
 @app.on_message(filters.video | filters.animation)
 async def handle_video(client, message):
-    try:
-        file_id = message.video.file_id if message.video else message.animation.file_id
+    import pyrogram
+    import sys
 
-        # ✅ هذا يحل كل مشاكل async_generator
-        async for file_info in client.get_file(file_id):
-            break
+    # طباعة بيانات البيئة
+    print("Pyrogram version:", pyrogram.__version__)
+    print("Pyrogram loaded from:", pyrogram.__file__)
+    print("Python version:", sys.version)
+    print("Message type:", "video" if message.video else "animation")
+    print("message.video:", message.video)
+    print("message.animation:", message.animation)
+
+    # استخراج file_id
+    file_id = message.video.file_id if message.video else message.animation.file_id
+    print("file_id:", file_id)
+
+    try:
+        file_info = await client.get_file(file_id)
+        print("file_info type:", type(file_info))
+        print("file_info:", file_info)
+
+        # الفحص: إذا نوعه نص = مشكلة، إذا كائن ملف = ممتاز
+        if isinstance(file_info, str):
+            await message.reply_text("❌ لم أستطع جلب معلومات الفيديو من تيليجرام. ما رجع لي كائن ملف! هذا غالبًا خلل مكتبة أو ملف غير صالح.")
+            return
+        if not hasattr(file_info, 'file_path'):
+            await message.reply_text("❌ الكائن ليس فيه file_path! تحقق من نسختك وملفك.")
+            return
 
         file_path = file_info.file_path
         file_name = os.path.basename(file_path)
-        direct_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_path}"
-        local_path = f"{DOWNLOADS_DIR}/{file_name}"
+        await message.reply_text(f"✅ الملف جُلب بنجاح!\nfile_path: {file_path}\nfile_name: {file_name}")
 
-        progress_message = await message.reply_text("🔽 بدأ تحميل الفيديو...")
-
-        aria2_command = [
-            "aria2c", "-x", "16", "-s", "16", "--summary-interval=1", "--console-log-level=warn",
-            "-o", file_name, "-d", DOWNLOADS_DIR, direct_url
-        ]
-
-        process = subprocess.Popen(
-            aria2_command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True
-        )
-
-        while True:
-            line = process.stdout.readline()
-            if not line:
-                break
-            match = re.search(
-                r'(\d+(?:\.\d+)?[KMG]iB)/(\d+(?:\.\d+)?[KMG]iB)\((\d+(?:\.\d+)?)%\).*DL:(\d+(?:\.\d+)?[KMG]iB).*ETA:(\d+s)',
-                line
-            )
-            if match:
-                downloaded = match.group(1)
-                total = match.group(2)
-                percent = match.group(3)
-                speed = match.group(4)
-                eta = match.group(5)
-                text = (
-                    f"📥 جاري تحميل الفيديو...\n"
-                    f"⬇️ النسبة: {percent}%\n"
-                    f"💾 الحجم: {downloaded} / {total}\n"
-                    f"⚡ السرعة: {speed}\n"
-                    f"⏳ متبقي: {eta}"
-                )
-                try:
-                    await progress_message.edit_text(text)
-                except:
-                    pass
-
-        process.wait()
-        if process.returncode != 0:
-            await progress_message.edit_text("❌ فشل تحميل الفيديو.")
-            return
-
-        try:
-            await progress_message.delete()
-        except:
-            pass
-
-        await message.reply_text("✅ تم تحميل الفيديو.\nالآن أرسل **رقم الحجم بالميجابايت** الذي تريده للفيديو (مثال: 50)")
-        user_video_data[message.chat.id] = {
-            'file': local_path,
-            'message': message
-        }
-
-    except Exception as e:
-        print(f"❌ Error in handle_video: {e}")
-        await message.reply_text(f"حدث خطأ أثناء تحميل الفيديو: {e}")
+    except Exception as ex:
+        import traceback
+        tb = traceback.format_exc()
+        print("Exception:", ex)
+        print(tb)
+        await message.reply_text(f"حدث استثناء: {ex}\n{tb}")
 
 # --- التقاط رقم الحجم من المستخدم ووضعه في قائمة الانتظار ---
 @app.on_message(filters.text & filters.private)
