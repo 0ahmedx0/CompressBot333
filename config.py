@@ -2,10 +2,14 @@
 
 from os import getenv
 import os 
-API_ID = int(os.getenv("API_ID"))
+API_ID = int(os.getenv("API_ID"))  # تحويل API_ID إلى integer
 API_HASH = os.getenv("API_HASH")
 API_TOKEN = os.getenv("API_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")  # قم بتغيير هذا إلى معرف قناة Telegram الخاص بك
+CHANNEL_ID = int(os.getenv("CHANNEL_ID")) # تحويل CHANNEL_ID إلى integer لأنه رقم
+
+if not API_ID or not API_HASH or not API_TOKEN or not CHANNEL_ID:
+    raise ValueError("Please set API_ID, API_HASH, API_TOKEN, and CHANNEL_ID environment variables.")
+
 # Audio compression settings
 AUDIO_BITRATE = "32k"  
 AUDIO_FORMAT = "mp3" 
