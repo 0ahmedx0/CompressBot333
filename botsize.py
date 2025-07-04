@@ -108,12 +108,16 @@ async def handle_video(client, message):
     try:
         file_id = message.video.file_id if message.video else message.animation.file_id
 
-        # استخراج معلومات الملف
+        # الحل المؤكد:
         file_info = await client.get_file(file_id)
+        # إذا لا زال الخطأ:
+        # file_info = [i async for i in client.get_file(file_id)][0]
+
         file_path = file_info.file_path
         file_name = os.path.basename(file_path)
         direct_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_path}"
         local_path = f"{DOWNLOADS_DIR}/{file_name}"
+        # ...
 
         print(f"📥 Downloading from: {direct_url}")
 
