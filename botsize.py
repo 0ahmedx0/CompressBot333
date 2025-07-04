@@ -468,10 +468,11 @@ async def handle_video(client, message: Message):
         while True:
             line = await asyncio.wait_for(process.stdout.readline(), timeout=5.0) # انتظر قليلا لقراءة السطر
             if not line:
+                # هذا if/else يجب أن تكون المسافة البادئة متساوية لهما
                 if await asyncio.wait_for(process.wait(), timeout=5.0) is not None:
-                     break # إذا انتهى aria2c بالفعل، نخرج
-                 else:
-                     continue # لم نحصل على سطر لكن aria2c ما زال يعمل، استمر في الانتظار
+                    break # إذا انتهى aria2c بالفعل، نخرج
+                else: # <--- لاحظ المسافة البادئة هنا، تتماشى مع الـ 'if' أعلاها
+                    continue # لم نحصل على سطر لكن aria2c ما زال يعمل، استمر في الانتظار
             line = line.decode('utf-8', errors='ignore').strip()
 
             # مثال للسطر: [#a1b2c3 12MiB/35MiB(35%) CN:16 DL:2.3MiB ETA:19s]
@@ -499,7 +500,6 @@ async def handle_video(client, message: Message):
                         last_update_time = time.time()
                     except:
                         pass  # تجاهل أي خطأ بسبب rate limit
-
         # تأكد من انتظار انتهاء العملية إذا لم تخرج من الحلقة عن طريق break
         returncode = await process.wait()
         print(f"aria2c process finished with return code: {returncode}")
