@@ -389,7 +389,7 @@ def handle_video(client, message):
                 print(f"Error deleting partial file {file}: {e}")
 
 
-@app.on_message(filters.text & filters.private & ~filters.command())
+@app.on_message(filters.text & filters.private)
 def handle_size_input(client, message):
     """
     معالجة الرسائل النصية التي تحتوي على رقم (الحجم المطلوب).
