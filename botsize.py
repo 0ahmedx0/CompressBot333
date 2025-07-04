@@ -105,15 +105,15 @@ app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
 @app.on_message(filters.video | filters.animation)
 async def video_handler(client, message: Message):
     chat_id = message.chat.id
+    file = message.video or message.animation
+    file_id = file.file_id
+    file_path = f"{DOWNLOADS_DIR}/{file_id}.mp4"
 
-    file = message.video or message.animation  # لا ترسل file_id!
-    file_path = f"{DOWNLOADS_DIR}/{file.file_id}.mp4"
+    # السطر الذهبي:
+    file_obj = await client.get_file(file_id)
+    download_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_obj.file_path}"
 
-    # مرر الكائن نفسه وليس file_id
-    async for file_obj in client.get_file(file):
-        download_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_obj.file_path}"
-        break
-    # رسالة التقدم
+    # الآن استخدم download_url مع aria2c:
     progress = {"current": 0, "total": file.file_size, "speed": 0, "eta": "?", "percent": 0}
     progress_cb = lambda p: progress.update(p)
     msg = await message.reply(f"جاري التحميل...\n0%")
@@ -149,6 +149,7 @@ async def video_handler(client, message: Message):
     await message.reply(
         "✅ تم تحميل الفيديو بنجاح.\n\nالآن أرسل **رقم فقط** يمثل الحجم النهائي المطلوب للملف المضغوط بالميجابايت (مثال: 50)"
     )
+
 
 # --- استقبال الحجم (ميجابايت) ---
 @app.on_message(filters.text & filters.private)
