@@ -106,18 +106,13 @@ app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
 async def video_handler(client, message: Message):
     chat_id = message.chat.id
 
-    # استخراج رابط التحميل المباشر
     file = message.video or message.animation
     file_id = file.file_id
-    file_info = await client.get_messages(chat_id, message.id)
+    file_obj = await client.get_file(file_id)
     file_path = f"{DOWNLOADS_DIR}/{file_id}.mp4"
 
-    # احصل على رابط التنزيل من التليجرام (Direct Download)
-    tg_file = await client.storage.get_file(file.file_id)
-    url = tg_file.file_path if tg_file.file_path.startswith("http") else await client.get_file_url(file.file_id)
-    if not url.startswith("http"):
-        await message.reply("لم أستطع استخراج رابط التحميل. أعد إرسال الفيديو.")
-        return
+    # الحصول على رابط التنزيل المباشر
+    download_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_obj.file_path}"
 
     # إرسال رسالة التقدم للمستخدم
     progress = {"current": 0, "total": file.file_size, "speed": 0, "eta": "?", "percent": 0}
@@ -137,7 +132,7 @@ async def video_handler(client, message: Message):
     ))
 
     # تحميل الملف عبر aria2c
-    ok = await aria2c_download(url, file_path, progress_cb)
+    ok = await aria2c_download(download_url, file_path, progress_cb)
     stop_event.set()
     await asyncio.sleep(1)
     await msg.delete()
@@ -151,7 +146,6 @@ async def video_handler(client, message: Message):
         "duration": file.duration or 0,
         "message": message
     }
-    # أطلب الحجم النهائي من المستخدم
     await message.reply(
         "✅ تم تحميل الفيديو بنجاح.\n\nالآن أرسل **رقم فقط** يمثل الحجم النهائي المطلوب للملف المضغوط بالميجابايت (مثال: 50)"
     )
