@@ -1,282 +1,222 @@
-# bot.py
-import asyncio
 import os
 import re
+import tempfile
+import threading
 import time
+import subprocess
+import ffmpeg
 from pyrogram import Client, filters
-from pyrogram.types import Message
-from pyrogram.errors import FloodWait
-from config import *
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from config import (API_ID, API_HASH, API_TOKEN, CHANNEL_ID,
+                    VIDEO_CODEC, VIDEO_PIXEL_FORMAT, VIDEO_AUDIO_CODEC,
+                    VIDEO_AUDIO_BITRATE, VIDEO_AUDIO_CHANNELS, VIDEO_AUDIO_SAMPLE_RATE)
 
-# --- الحالة العامة والمتغيرات ---
-
-# مجلد لتخزين التنزيلات والملفات المضغوطة
+# --- إعداد المسارات والمتغيرات ---
 DOWNLOADS_DIR = "./downloads"
+if not os.path.exists(DOWNLOADS_DIR):
+    os.makedirs(DOWNLOADS_DIR)
 
-# قاموس لتخزين بيانات فيديو المستخدم قبل الضغط
-# المفتاح: chat_id, القيمة: {'file_path': str, 'duration': int, 'original_message': Message}
-user_video_data = {}
+user_video_data = {}  # chat_id -> dict مع بيانات الفيديو بانتظار الحجم
+video_queue = []
+processing_lock = threading.Lock()
+is_processing = False
 
-# قائمة انتظار لمهام ضغط الفيديو
-video_queue = asyncio.Queue()
+# --- دالة حساب الـ bitrate المطلوب ---
+def calculate_bitrate(target_size_mb, duration_sec):
+    # 1MB = 8192 kbits
+    return int((target_size_mb * 8192) / duration_sec)
 
-# تهيئة عميل البوت
-app = Client("pyro_compressor_bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
+# --- دالة معالجة قائمة الانتظار وضغط الفيديو ---
+def process_queue():
+    global is_processing
+    while video_queue:
+        with processing_lock:
+            if not video_queue:
+                is_processing = False
+                return
 
+            video_data = video_queue.pop(0)
+            is_processing = True
 
-# --- دوال مساعدة ---
+        file = video_data['file']
+        message = video_data['message']
+        temp_filename = None
 
-async def run_command(command: str):
-    """تنفيذ أمر shell بشكل غير متزامن."""
-    process = await asyncio.create_subprocess_shell(
-        command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    stdout, stderr = await process.communicate()
-    return process.returncode, stdout.decode('utf-8', 'ignore'), stderr.decode('utf-8', 'ignore')
+        try:
+            if not os.path.exists(file):
+                message.reply_text("❌ لم يتم العثور على الملف.")
+                continue
 
+            # قراءة مدة الفيديو
+            probe = ffmpeg.probe(file)
+            duration_sec = float(probe['format']['duration'])
 
-# --- منطق البوت الأساسي ---
+            # حجم الهدف من المستخدم
+            target_size_mb = video_data.get('target_size_mb', 20)
+            target_bitrate = calculate_bitrate(target_size_mb, duration_sec)
 
-@app.on_message(filters.command("start") & filters.private)
-async def start_command(client: Client, message: Message):
-    """الرد على أمر /start."""
-    await message.reply_text(
-        "أهلاً بك! أرسل لي فيديو أو رسوم متحركة (animation) وسأقوم بتهيئته للضغط."
-    )
+            # إنشاء الملف المؤقت
+            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
+                temp_filename = temp_file.name
 
-# 1. معالجة الفيديو أو الرسوم المتحركة الواردة
-@app.on_message((filters.video | filters.animation) & filters.private)
-async def handle_video(client: Client, message: Message):
-    """
-    يعالج الفيديو أو الرسوم المتحركة الواردة.
-    يقوم بتنزيلها باستخدام aria2c ويطلب من المستخدم تحديد الحجم المستهدف.
-    """
-    if message.chat.id in user_video_data:
-        await message.reply_text(
-            "لديك بالفعل فيديو قيد المعالجة. يرجى إكمال العملية الحالية أولاً بإرسال الحجم المطلوب."
-        )
-        return
+            ffmpeg_command = (
+                f'ffmpeg -y -i "{file}" -b:v {target_bitrate}k -c:v {VIDEO_CODEC} '
+                f'-preset medium -pix_fmt {VIDEO_PIXEL_FORMAT} -c:a {VIDEO_AUDIO_CODEC} '
+                f'-b:a {VIDEO_AUDIO_BITRATE} -ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} '
+                f'-map_metadata -1 "{temp_filename}"'
+            )
 
-    media = message.video or message.animation
-    if not media:
-        await message.reply_text("عذراً، هذه الرسالة لا تحتوي على وسائط صالحة.")
-        return
+            print(f"🎬 FFmpeg Command: {ffmpeg_command}")
+            subprocess.run(ffmpeg_command, shell=True, check=True, capture_output=True)
+            print("✅ FFmpeg ضغط الفيديو بنجاح.")
 
-    sent_message = await message.reply_text("⏳ جارٍ التحضير لتنزيل الفيديو...")
+            # إرسال الفيديو إلى القناة
+            if CHANNEL_ID:
+                message.reply_text("⬆️ جاري رفع الفيديو المضغوط إلى القناة...")
+                app.send_document(
+                    chat_id=CHANNEL_ID,
+                    document=temp_filename,
+                    caption=f"🎞️ الفيديو المضغوط إلى ~{target_size_mb}MB"
+                )
+                message.reply_text("✅ تم ضغط ورفع الفيديو بنجاح إلى القناة.")
+            else:
+                message.reply_text("✅ تم ضغط الفيديو. لكن لم يتم تحديد قناة للرفع.")
 
+        except subprocess.CalledProcessError as e:
+            print("❌ خطأ من FFmpeg!")
+            print(f"stderr: {e.stderr.decode()}")
+            message.reply_text("❌ حدث خطأ أثناء ضغط الفيديو.")
+        except Exception as e:
+            print(f"❌ General error: {e}")
+            message.reply_text("❌ حدث خطأ غير متوقع أثناء المعالجة.")
+        finally:
+            if temp_filename and os.path.exists(temp_filename):
+                os.remove(temp_filename)
+            time.sleep(5)
+
+    is_processing = False
+
+# --- استقبال الفيديو وتحميله عبر aria2c مع عرض التقدم ---
+@app.on_message(filters.video | filters.animation)
+async def handle_video(client, message):
     try:
-        file = await client.get_file(media.file_id)
-        download_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file.file_path}"
-    except Exception as e:
-        await sent_message.edit(f"❌ حدث خطأ أثناء الحصول على رابط التحميل: `{e}`")
-        return
+        file_id = message.video.file_id if message.video else message.animation.file_id
 
-    # إعداد مسار التنزيل
-    sanitized_filename = re.sub(r'[\\/*?:"<>|]', "", media.file_name or f"{media.file_unique_id}.mp4")
-    download_path = os.path.join(DOWNLOADS_DIR, sanitized_filename)
+        # استخراج معلومات الملف
+        file_info = await client.get_file(file_id)
+        file_path = file_info.file_path
+        file_name = os.path.basename(file_path)
+        direct_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_path}"
+        local_path = f"{DOWNLOADS_DIR}/{file_name}"
 
-    # أمر التحميل باستخدام aria2c
-    aria2c_cmd = (
-        f'aria2c --console-log-level=warn -c -x 16 -s 16 -k 1M '
-        f'"{download_url}" '
-        f'--dir="{DOWNLOADS_DIR}" '
-        f'--out="{sanitized_filename}"'
-    )
-    
-    # بدء التحميل وعرض التقدم
-    process = await asyncio.create_subprocess_shell(aria2c_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    
-    last_update_time = 0
-    while process.returncode is None:
-        line = await process.stdout.readline()
-        if not line:
-            break
-        
-        # تحليل مخرجات aria2c لاستخلاص التقدم
-        progress_match = re.search(
-            r'\[#(?:[a-f0-9]+)\s([\d\.]+(?:Ki|Mi|Gi)B)/([\d\.]+(?:Ki|Mi|Gi)B)\((\d+)%\)\s'
-            r'.*?DL:\s*([\d\.]+(?:Ki|Mi|Gi)B/s)\sETA:\s*(\w+)',
-            line.decode('utf-8', 'ignore').strip()
+        print(f"📥 Downloading from: {direct_url}")
+
+        progress_message = await message.reply_text("🔽 بدأ تحميل الفيديو...")
+
+        # أمر aria2c
+        aria2_command = [
+            "aria2c", "-x", "16", "-s", "16", "--summary-interval=1", "--console-log-level=warn",
+            "-o", file_name, "-d", DOWNLOADS_DIR, direct_url
+        ]
+
+        process = subprocess.Popen(
+            aria2_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
         )
 
-        if progress_match:
-            current_time = time.time()
-            if current_time - last_update_time > 3:  # تحديث كل 3 ثوانٍ لتجنب أخطاء FloodWait
-                downloaded, total, percent_str, speed, eta = progress_match.groups()
-                percent = int(percent_str)
-                done_blocks = '▰' * (percent // 10)
-                empty_blocks = '▱' * (10 - (percent // 10))
+        while True:
+            line = process.stdout.readline()
+            if not line:
+                break
 
-                progress_text = (
-                    f"**📥 جاري التحميل...**\n"
-                    f"`{done_blocks}{empty_blocks}` ({percent}%)\n\n"
-                    f"🗂️ **الحجم:** `{downloaded} / {total}`\n"
-                    f"🚀 **السرعة:** `{speed}`\n"
-                    f"⏱️ **الوقت المتبقي:** `{eta}`"
+            match = re.search(
+                r'(\d+(?:\.\d+)?[KMG]iB)/(\d+(?:\.\d+)?[KMG]iB)\((\d+(?:\.\d+)?)%\).*DL:(\d+(?:\.\d+)?[KMG]iB).*ETA:(\d+s)',
+                line
+            )
+
+            if match:
+                downloaded = match.group(1)
+                total = match.group(2)
+                percent = match.group(3)
+                speed = match.group(4)
+                eta = match.group(5)
+                text = (
+                    f"📥 جاري تحميل الفيديو...\n"
+                    f"⬇️ النسبة: {percent}%\n"
+                    f"💾 الحجم: {downloaded} / {total}\n"
+                    f"⚡ السرعة: {speed}\n"
+                    f"⏳ متبقي: {eta}"
                 )
                 try:
-                    await sent_message.edit_text(progress_text)
-                    last_update_time = current_time
-                except FloodWait as e:
-                    await asyncio.sleep(e.x)
-                except Exception:
+                    await progress_message.edit_text(text)
+                except:
                     pass
-        await asyncio.sleep(0.1)
 
-    await process.wait()
-    
-    if process.returncode != 0:
-        stderr_output = (await process.stderr.read()).decode('utf-8', 'ignore')
-        await sent_message.edit(f"❌ **فشل التحميل.**\n\n**الخطأ:**\n`{stderr_output[-500:]}`")
-        if os.path.exists(download_path): os.remove(download_path)
-        return
+        process.wait()
+        if process.returncode != 0:
+            await progress_message.edit_text("❌ فشل تحميل الفيديو.")
+            return
 
-    await sent_message.delete()
-    if not os.path.exists(download_path):
-        await message.reply_text("❌ حدث خطأ، لم يتم العثور على الملف بعد اكتمال التحميل.")
-        return
+        try:
+            await progress_message.delete()
+        except:
+            pass
 
-    user_video_data[message.chat.id] = {
-        'file_path': download_path,
-        'duration': media.duration or 0,
-        'original_message': message
-    }
-    
-    await message.reply_text(
-        "✅ **تم تحميل الفيديو بنجاح!**\n\n"
-        "الآن، أرسل الحجم النهائي المطلوب للفيديو **كرقم فقط بالميجابايت (MB)**.\n"
-        "مثال: أرسل `50` لضغط الفيديو إلى حجم 50 ميجابايت."
-    )
+        await message.reply_text("✅ تم تحميل الفيديو.\nالآن أرسل **رقم الحجم بالميجابايت** الذي تريده للفيديو (مثال: 50)")
 
+        # حفظ بيانات الفيديو للمستخدم حتى يرسل الرقم
+        user_video_data[message.chat.id] = {
+            'file': local_path,
+            'message': message
+        }
 
-# 2. معالجة رسالة الحجم المستهدف
-@app.on_message(filters.regex(r"^\d+$") & filters.private)
-async def handle_target_size(client: Client, message: Message):
-    """
-    يعالج رسالة المستخدم التي تحدد الحجم المستهدف بالميجابايت.
-    يحسب معدل البت (Bitrate) ويضيف المهمة إلى قائمة الانتظار.
-    """
-    chat_id = message.chat.id
-    if chat_id not in user_video_data:
-        await message.reply_text("🤔 لم أجد أي فيديو مرتبط بك. يرجى إرسال فيديو أولاً.")
-        return
-
-    video_data = user_video_data[chat_id]
-    duration = video_data['duration']
-    
-    if duration is None or duration == 0:
-        await message.reply_text("❌ لا يمكنني تحديد مدة الفيديو. لا يمكن المتابعة.")
-        if os.path.exists(video_data['file_path']): os.remove(video_data['file_path'])
-        del user_video_data[chat_id]
-        return
-
-    target_size_mb = int(message.text)
-    
-    # حساب معدل البت (Bitrate)
-    audio_bitrate_kbps = int(re.sub(r'\D', '', VIDEO_AUDIO_BITRATE))
-    total_bitrate_kbps = (target_size_mb * 1024 * 8) / duration
-    video_bitrate_kbps = total_bitrate_kbps - audio_bitrate_kbps
-
-    if video_bitrate_kbps <= 10: # معدل بت منخفض جدًا قد يسبب فشلًا
-        await message.reply_text(
-            f"❌ الحجم المطلوب ({target_size_mb} MB) صغير جدًا بالنسبة لمدة الفيديو.\n"
-            f"هذا يؤدي إلى جودة منخفضة للغاية. يرجى اختيار حجم أكبر."
-        )
-        return
-
-    # إضافة المهمة إلى قائمة الانتظار
-    job = {
-        'user_chat_id': chat_id,
-        'input_path': video_data['file_path'],
-        'video_bitrate': f"{int(video_bitrate_kbps)}k",
-    }
-    await video_queue.put(job)
-    
-    del user_video_data[chat_id]
-    
-    await message.reply_text(
-        f"👍 **تمت إضافة طلبك إلى قائمة الانتظار.**\n"
-        f"موقعك في الطابور: `{video_queue.qsize()}`\n\n"
-        "سيتم إعلامك عند اكتمال الضغط."
-    )
-
-
-# 3. العامل الذي يعالج قائمة الانتظار
-async def process_queue_worker():
-    """عامل يعمل في الخلفية لمعالجة المهام من قائمة الانتظار."""
-    while True:
-        job = await video_queue.get()
-
-        user_chat_id = job['user_chat_id']
-        input_path = job['input_path']
-        video_bitrate = job['video_bitrate']
-        
-        output_filename = f"compressed_{os.path.basename(input_path)}"
-        output_path = os.path.join(DOWNLOADS_DIR, output_filename)
-        
-        status_message = await app.send_message(user_chat_id, "⚙️ جاري ضغط الفيديو...")
-
-        # أمر FFmpeg
-        ffmpeg_cmd = (
-            f'ffmpeg -y -i "{input_path}" '
-            f'-c:v {VIDEO_CODEC} -b:v {video_bitrate} -pix_fmt {VIDEO_PIXEL_FORMAT} '
-            f'-preset {VIDEO_PRESET} -c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} '
-            f'-ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} "{output_path}"'
-        )
-
-        print(f"Executing FFmpeg for chat {user_chat_id}: {ffmpeg_cmd}")
-        return_code, _, stderr = await run_command(ffmpeg_cmd)
-
-        if return_code != 0:
-            error_text = f"❌ حدث خطأ أثناء ضغط الفيديو.\n\n`{stderr[-1500:]}`"
-            await status_message.edit(error_text)
-        else:
-            await status_message.edit("🚀 جاري رفع الفيديو المضغوط إلى القناة...")
-            try:
-                await app.send_video(
-                    chat_id=CHANNEL_ID,
-                    video=output_path,
-                    caption=f"فيديو مضغوط للمستخدم `{user_chat_id}`"
-                )
-                await status_message.edit("🎉 **تم ضغط ورفع الفيديو بنجاح إلى القناة!**")
-            except Exception as e:
-                error_text = f"❌ تم ضغط الفيديو، ولكن فشل الرفع إلى القناة.\n\n`{e}`"
-                await status_message.edit(error_text)
-        
-        # التنظيف
-        if os.path.exists(input_path): os.remove(input_path)
-        if os.path.exists(output_path): os.remove(output_path)
-
-        video_queue.task_done()
-
-
-# --- بدء تشغيل البوت ---
-async def main():
-    if not os.path.isdir(DOWNLOADS_DIR):
-        os.makedirs(DOWNLOADS_DIR)
-
-    await app.start()
-    print("Bot started...")
-    
-    try:
-        chat = await app.get_chat(CHANNEL_ID)
-        print(f"Successfully connected to channel: {chat.title}")
     except Exception as e:
-        print(f"CRITICAL: Could not access CHANNEL_ID ({CHANNEL_ID}). Error: {e}")
-        print("Please check the channel ID and ensure the bot is an admin with post permissions.")
-        
-    asyncio.create_task(process_queue_worker())
-    
-    await asyncio.Event().wait() # إبقاء البوت يعمل إلى الأبد
+        print(f"❌ Error in handle_video: {e}")
+        await message.reply_text("حدث خطأ أثناء تحميل الفيديو. حاول مرة أخرى.")
+
+# --- التقاط رقم الحجم من المستخدم ووضعه في قائمة الانتظار ---
+@app.on_message(filters.text & filters.private)
+async def handle_target_size(client, message):
+    chat_id = message.chat.id
+
+    if chat_id not in user_video_data:
+        return
+
+    # قبول الرقم فقط (مع أو بدون MB)
+    txt = message.text.strip().lower().replace('ميجا', '').replace('م', '').replace('mb', '')
+    if not txt.isdigit():
+        await message.reply_text("❌ أرسل رقمًا فقط يمثل الحجم بالميجابايت (مثال: 50)")
+        return
+
+    target_size_mb = int(txt)
+    if target_size_mb < 5 or target_size_mb > 200:
+        await message.reply_text("❌ الحجم يجب أن يكون بين 5 و200 ميجابايت.")
+        return
+
+    video_data = user_video_data.pop(chat_id)
+    video_data['target_size_mb'] = target_size_mb
+    video_queue.append(video_data)
+
+    await message.reply_text(f"📦 جاري ضغط الفيديو إلى حوالي {target_size_mb}MB...")
+
+    global is_processing
+    if not is_processing:
+        threading.Thread(target=process_queue).start()
+
+# --- أمر /start ---
+@app.on_message(filters.command("start") & filters.private)
+async def start(client, message):
+    await message.reply_text("👋 أرسل لي فيديو وسيتم ضغطه بالحجم الذي تختاره (أرسل الفيديو ثم الحجم المطلوب بالميجابايت).")
+
+# --- تشغيل البوت ---
+app = Client(
+    "botsize",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=API_TOKEN
+)
 
 if __name__ == "__main__":
-    print("Starting bot...")
-    print("Make sure 'ffmpeg' and 'aria2c' are installed and in your system's PATH.")
-    # In Google Colab, run this in a cell first: !apt-get -y install aria2 ffmpeg
-    
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Bot stopped by user.")
+    app.run()
