@@ -108,18 +108,20 @@ async def video_handler(client, message: Message):
 
     file = message.video or message.animation
     file_id = file.file_id
-    file_obj = client.get_file(file_id)
     file_path = f"{DOWNLOADS_DIR}/{file_id}.mp4"
 
-    # الحصول على رابط التنزيل المباشر
-    download_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_obj.file_path}"
+    # استخراج رابط التنزيل المباشر باستخدام async generator
+    async for file_obj in client.get_file(file_id):
+        download_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_obj.file_path}"
+        break
 
     # إرسال رسالة التقدم للمستخدم
     progress = {"current": 0, "total": file.file_size, "speed": 0, "eta": "?", "percent": 0}
     progress_cb = lambda p: progress.update(p)
     msg = await message.reply(f"جاري التحميل...\n0%")
     stop_event = asyncio.Event()
-    asyncio.create_task(edit_progress_message(client, chat_id, msg.id,
+    asyncio.create_task(edit_progress_message(
+        client, chat_id, msg.id,
         "🔽 تحميل الفيديو:\n\n{percent}%\n{current}/{total}\nالسرعة: {speed}/ث\nالوقت المتبقي: {eta}",
         stop_event,
         lambda: {
