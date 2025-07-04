@@ -580,6 +580,37 @@ app = Client(
     workdir=SESSION_DIR # Use the defined SESSION_DIR variable
 )
 
+@app.on_message(filters.command("check_channel") & filters.private)
+async def check_channel_command(client: Client, message: Message):
+    """Checks if a given channel ID/username is valid and accessible."""
+    chat_info_str = message.text.split(maxsplit=1)
+    if len(chat_info_str) != 2:
+        await message.reply_text("الاستخدام:\n`/check_channel <اسم_القناة_أو_آيدي>`\n\nمثال: `/check_channel my_channel` أو `/check_channel -1001234567890`", quote=True)
+        return
+
+    chat_id_or_username = chat_info_str[1].strip()
+    await message.reply_text(f"🔍 جارٍ التحقق من القناة: `{chat_id_or_username}` ...", quote=True)
+
+    try:
+        # Try to get chat information
+        chat = await client.get_chat(chat_id_or_username)
+
+        # Extract relevant info
+        chat_type = chat.type
+        chat_title = chat.title
+        chat_id_numeric = chat.id # This is the numeric ID as an integer
+
+        response_text = f"✅ تم العثور على القناة:\n"
+        response_text += f"**النوع:** `{chat_type.value}`\n" # Use .value for string representation
+        response_text += f"**العنوان:** `{chat_title}`\n"
+        response_text += f"**آيدي (للاستخدام في Pyrogram):** `{chat_id_numeric}`\n"
+        response_text += f"**اسم المستخدم (@):** `{chat.username or 'N/A'}`\n"
+
+        await message.reply_text(response_text, quote=True)
+
+    except Exception as e:
+        await message.reply_text(f"❌ فشل التحقق من القناة:\n`{e}`\n\nيرجى التأكد من صحة آيدي أو اسم المستخدم وأن البوت عضو أو مشرف في القناة إذا كانت خاصة.", quote=True)
+
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(client: Client, message: Message):
     """Handles the /start command."""
