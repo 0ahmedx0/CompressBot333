@@ -133,12 +133,12 @@ def calculate_bitrate(target_size_mb, duration_sec):
     return int((target_size_mb * 8192) / duration_sec)
 
 @app.on_message(filters.video | filters.animation)
-def handle_video(client, message):
+async def handle_video(client, message):
     try:
         file_id = message.video.file_id if message.video else message.animation.file_id
 
         # استخراج معلومات الملف من Telegram
-        file_info = client.get_file(file_id)
+        file_info = await client.get_file(file_id)
         file_path = file_info.file_path
         file_name = os.path.basename(file_path)
         direct_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file_path}"
