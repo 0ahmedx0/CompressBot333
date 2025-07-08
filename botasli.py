@@ -141,29 +141,29 @@ def process_video_for_compression(video_data):
         # هذا يضمن أن يتم رفعهما بالتسلسل ومتابعة بعضهما البعض في القناة.
         if CHANNEL_ID:
             try:
-                # 1. رفع الفيديو الأصلي أولاً
+                # 1. رفع الفيديو المضغوط أولاً
+                sent_to_channel_message = app.send_document(
+                    chat_id=CHANNEL_ID,
+                    document=temp_compressed_filename,
+                    progress=lambda current, total: progress(current, total, f"ChannelUpload-MsgID:{message.id}"),
+                    caption=f"📦 الفيديو المضغوط (الجودة: {quality.replace('crf_', 'CRF ')})\nالحجم: {compressed_file_size_mb:.2f} ميجابايت"
+                )
+                print(f"[{thread_name}] Compressed video uploaded to channel: {CHANNEL_ID} for original message ID {message.id}.")
+        
+                # 2. ثم رفع الفيديو الأصلي بعد المضغوط
                 try:
                     app.copy_message(
                         chat_id=CHANNEL_ID,
                         from_chat_id=message.chat.id,
-                        message_id=message.id, # <--- تم التغيير هنا من 'message_ids' إلى 'message_id'
-                        caption="الفيديو الأصلي"
+                        message_id=message.id,
+                        caption="🎞️ الفيديو الأصلي"
                     )
                     print(f"[{thread_name}] Original video (ID: {message.id}) copied to channel: {CHANNEL_ID}.")
                 except (MessageEmpty, UserNotParticipant) as e:
                     print(f"[{thread_name}] Warning: Could not copy original message {message.id} to channel {CHANNEL_ID} due to: {e}. Check bot permissions or channel type.")
                 except Exception as e:
                     print(f"[{thread_name}] Error copying original video to channel: {e}")
-
-                # 2. ثم رفع الفيديو المضغوط مباشرة بعد الأصلي
-                sent_to_channel_message = app.send_document(
-                    chat_id=CHANNEL_ID,
-                    document=temp_compressed_filename,
-                    progress=lambda current, total: progress(current, total, f"ChannelUpload-MsgID:{message.id}"), 
-                    caption=f"الفيديو المضغوط (الجودة: {quality.replace('crf_', 'CRF ')}) \nالحجم: {compressed_file_size_mb:.2f} ميجابايت"
-                )
-                print(f"[{thread_name}] Compressed video uploaded to channel: {CHANNEL_ID} for original message ID {message.id}.")
-                
+        
                 # إشعار المستخدم بنجاح العملية
                 message.reply_text(
                     f"✅ تم ضغط الفيديو ورفعه بنجاح إلى القناة!\n"
@@ -209,12 +209,33 @@ def process_video_for_compression(video_data):
                 print(f"[{thread_name}] Error deleting temporary file {temp_compressed_filename}: {e}")
         
         # ------------------- تنظيف بيانات الفيديو من القاموس -------------------
-        # يتم حذف البيانات من القاموس بعد انتهاء جميع عمليات التحميل والضغط والرفع.
+        # ------------------- إعادة تعيين بيانات الفيديو لإتاحة اختيار جودة أخرى -------------------
         if button_message_id in user_video_data:
-            if user_video_data[button_message_id].get('timer') and user_video_data[button_message_id]['timer'].is_alive():
-                user_video_data[button_message_id]['timer'].cancel()
-            del user_video_data[button_message_id]
-            print(f"[{thread_name}] Cleaned up data for message ID: {button_message_id}")
+            # إعادة ضبط العلامات للسماح بإعادة الاختيار
+            user_video_data[button_message_id]['processing_started'] = False
+            user_video_data[button_message_id]['quality'] = None
+        
+            try:
+                markup = InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton("جودة ضعيفة (CRF 27)", callback_data="crf_27"),
+                            InlineKeyboardButton("جودة متوسطة (CRF 23)", callback_data="crf_23"),
+                            InlineKeyboardButton("جودة عالية (CRF 18)", callback_data="crf_18"),
+                        ],
+                        [
+                            InlineKeyboardButton("❌ إنهاء العملية", callback_data="finish_process"),
+                        ]
+                    ]
+                )
+                app.edit_message_text(
+                    chat_id=video_data['message'].chat.id,
+                    message_id=button_message_id,
+                    text="🎞️ تم الانتهاء من ضغط الفيديو. يمكنك اختيار جودة أخرى، أو إنهاء العملية:",
+                    reply_markup=markup
+                )
+            except Exception as e:
+                print(f"[{thread_name}] Error re-displaying quality options: {e}")
 
 def auto_select_medium_quality(button_message_id):
     """
@@ -424,9 +445,32 @@ def compression_choice_callback(client, callback_query):
         return
 
     # معالجة الضغط على زر الإلغاء
-    if callback_query.data == "cancel_compression":
-        callback_query.answer("يتم إلغاء العملية...", show_alert=False)
-        cancel_compression_action(message_id)
+    # معالجة الضغط على زر الإلغاء أو الإنهاء
+    if callback_query.data in ["cancel_compression", "finish_process"]:
+        callback_query.answer("🚫 يتم إنهاء العملية...", show_alert=False)
+    
+        # حذف الملف (إن وُجد)
+        file_path = video_data.get('file')
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                print(f"[{thread_name}] Deleted file during finish/cancel: {file_path}")
+            except Exception as e:
+                print(f"[{thread_name}] Error deleting file during finish/cancel: {e}")
+    
+        # حذف الرسالة من تيليجرام
+        try:
+            app.delete_messages(chat_id=video_data['message'].chat.id, message_ids=message_id)
+            video_data['message'].reply_text("✅ تم إنهاء العملية وحذف الملف المؤقت.", quote=True)
+        except Exception as e:
+            print(f"[{thread_name}] Error deleting finish/cancel message: {e}")
+    
+        # حذف البيانات من الذاكرة
+        if message_id in user_video_data:
+            if video_data.get('timer') and video_data['timer'].is_alive():
+                video_data['timer'].cancel()
+            del user_video_data[message_id]
+    
         return
 
     # إيقاف المؤقت التلقائي لأن المستخدم اختار يدوياً
