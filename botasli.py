@@ -473,20 +473,20 @@ def compression_choice_callback(client, callback_query):
 cleanup_downloads()
 
 def check_channel_on_start():
-    thread_name = threading.current_thread().name
-    time.sleep(5) # إعطاء البوت بضع ثوانٍ للتشغيل
+    # الانتظار لبضع ثوانٍ للتأكد من بدء تشغيل البوت
+    time.sleep(5)
     if CHANNEL_ID:
         try:
             chat = app.get_chat(CHANNEL_ID)
-            print(f"[{thread_name}] ✅ تم التعرف على القناة بنجاح: '{chat.title}' (ID: {CHANNEL_ID})")
+            print(f"✅ تم التعرف على القناة بنجاح: '{chat.title}' (ID: {CHANNEL_ID})")
             if chat.type not in ["channel", "supergroup"]:
-                print(f"[{thread_name}] ⚠️ ملاحظة: معرف القناة '{CHANNEL_ID}' المحدد في config.py ليس لقناة أو مجموعة خارقة. قد تواجه مشاكل في رفع الملفات إذا لم يكن نوع الدردشة متوقعاً.")
-            elif not chat.permissions or not chat.permissions.can_post_messages:
-                 print(f"[{thread_name}] ⚠️ ملاحظة: البوت ليس لديه صلاحية نشر الرسائل في القناة '{chat.title}' (ID: {CHANNEL_ID}). يرجى منحه صلاحيات المشرف المطلوبة للنشر.")
+                print("⚠️ ملاحظة: ID القناة المحدد ليس لقناة أو مجموعة خارقة.")
+            elif not chat.permissions.can_post_messages: # Example of permission check
+                 print(f"⚠️ ملاحظة: البوت ليس لديه صلاحية نشر الرسائل في القناة '{chat.title}'.")
         except Exception as e:
-            print(f"[{thread_name}] ❌ خطأ في التعرف على القناة '{CHANNEL_ID}': {e}. يرجى التأكد من أن البوت مشرف في القناة وأن معرف القناة (ID) صحيح ومتاح.")
+            print(f"❌ خطأ في التعرف على القناة '{CHANNEL_ID}': {e}. يرجى التأكد من أن البوت مشرف في القناة وأن ID صحيح.")
     else:
-        print(f"[{thread_name}] ⚠️ لم يتم تحديد CHANNEL_ID في ملف config.py. لن يتم رفع الفيديوهات المضغوطة إلى أي قناة.")
+        print("⚠️ لم يتم تحديد CHANNEL_ID في ملف config.py. لن يتم رفع الفيديوهات إلى قناة.")
 
 threading.Thread(target=check_channel_on_start, daemon=True, name="ChannelCheckThread").start()
 
