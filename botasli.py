@@ -31,34 +31,22 @@ def progress(current, total, message_type="Generic"):
         print(f"[{thread_name}] {message_type}: {current / (1024 * 1024):.2f}MB (Total not yet known)")
 
 def cleanup_downloads():
-    """
-    تنظيف مجلد التنزيلات عند بدء تشغيل البوت تلقائيًا.
-    هذه الدالة ستتجنب الآن حذف الملفات الأصلية التي قد تكون محفوظة لعدة دورات ضغط،
-    وتركز على حذف الملفات المؤقتة.
-    """
     print("Cleaning up downloads directory...")
     for filename in os.listdir(DOWNLOADS_DIR):
         file_path = os.path.join(DOWNLOADS_DIR, filename)
         try:
             if os.path.isfile(file_path):
-                # فرضية: ملفات الفيديو الأصلية لها بادئة f"{message.from_user.id}_{message.id}"
-                # الملفات المؤقتة التي تُنشأ بواسطة tempfile يكون لها نمط خاص في الاسم (عادةً تبدأ بـ "tmp")
-                if "tmp" in os.path.basename(file_path): # مؤقت: حذف أي ملف اسمه يحتوي على "tmp"
-                    os.remove(file_path)
-                    print(f"Deleted old temporary file: {file_path}")
-                # هنا يمكن إضافة منطق لحذف الملفات القديمة جداً بناءً على تاريخ الإنشاء
-                # لكن للتركيز على طلبك الحالي، سنحافظ على الملفات الأصلية بعد انتهاء دورة الضغط
-                # ونعول على أن المستخدم سيحذفها يدوياً بزر "إلغاء العملية" بعد انتهاء دورة الضغط
-                # أو يجب إضافة أمر `/cleanup_old_files` إذا كنت تريد تنظيفها دوريًا.
+                os.remove(file_path)
+                print(f"Deleted old file: {file_path}")
         except Exception as e:
             print(f"Error deleting file {file_path}: {e}")
     print("Downloads directory cleaned.")
-
 
 # -------------------------- تهيئة العميل للبوت --------------------------
 app = Client("video_compressor_bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
 
 # قاموس لتخزين بيانات كل فيديو
+# user_video_data = { button_message_id: { 'message': ..., 'file': ..., 'quality': ..., 'processing_started': False, 'timer': ... } }
 user_video_data = {}
 
 # -------------------------- وظائف المعالجة الأساسية --------------------------
@@ -71,16 +59,16 @@ def process_video_for_compression(video_data):
     thread_name = threading.current_thread().name
     print(f"\n[{thread_name}] Starting compression for original message ID: {video_data['message'].id} (Button ID: {video_data['button_message_id']}).")
     
-    file_path = video_data['file'] 
+    file_path = video_data['file']
     message = video_data['message']
     button_message_id = video_data['button_message_id']
     quality = video_data['quality']
 
     # وضع علامة على أن المعالجة لهذا الفيديو قد بدأت.
-    # هذا يمنع المستخدم من تغيير الجودة أو إلغاء العملية لهذا الفيديو حتى تكتمل الدورة الحالية.
-    if button_message_id in user_video_data:
+    # هذا يمنع المستخدم من تغيير الجودة أو إلغاء العملية لهذا الفيديو بعد هذه النقطة.
+    if button_message_id in user_video_data: # تأكد أن الفيديو لا يزال موجوداً في البيانات
         user_video_data[button_message_id]['processing_started'] = True
-        # تحديث رسالة الأزرار لتشير إلى بدء المعالجة
+        # نحدّث رسالة الأزرار لتشير إلى بدء المعالجة
         try:
             app.edit_message_reply_markup(
                 chat_id=message.chat.id,
@@ -90,12 +78,13 @@ def process_video_for_compression(video_data):
         except Exception as e:
             print(f"[{thread_name}] Error updating message reply markup to 'processing started': {e}")
             
-    else: # في حال تم إلغاء البيانات بشكل غير متوقع قبل هذه النقطة
+    # إذا لم يكن الفيديو موجوداً، ربما تم إلغاؤه بالفعل
+    else:
         print(f"[{thread_name}] Video data for {button_message_id} not found when starting compression. Skipping.")
         return
 
 
-    temp_compressed_filename = None # متغير لتخزين مسار الملف المضغوط المؤقت
+    temp_compressed_filename = None
 
     try:
         if not os.path.exists(file_path):
@@ -106,7 +95,6 @@ def process_video_for_compression(video_data):
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir=DOWNLOADS_DIR) as temp_file:
             temp_compressed_filename = temp_file.name
 
-        # بناء أمر FFmpeg (لم يتغير)
         ffmpeg_command = ""
         if quality == "crf_27":
             ffmpeg_command = (
@@ -150,6 +138,7 @@ def process_video_for_compression(video_data):
             return
 
         # ------------------- رفع الفيديو الأصلي والمضغوط إلى القناة معاً -------------------
+        # هذا يضمن أن يتم رفعهما بالتسلسل ومتابعة بعضهما البعض في القناة.
         if CHANNEL_ID:
             try:
                 # 1. رفع الفيديو الأصلي أولاً
@@ -157,7 +146,7 @@ def process_video_for_compression(video_data):
                     app.copy_message(
                         chat_id=CHANNEL_ID,
                         from_chat_id=message.chat.id,
-                        message_id=message.id, 
+                        message_id=message.id, # <--- تم التغيير هنا من 'message_ids' إلى 'message_id'
                         caption="الفيديو الأصلي"
                     )
                     print(f"[{thread_name}] Original video (ID: {message.id}) copied to channel: {CHANNEL_ID}.")
@@ -205,8 +194,13 @@ def process_video_for_compression(video_data):
         print(f"[{thread_name}] General error during video processing for '{os.path.basename(file_path)}': {e}")
         message.reply_text(f"حدث خطأ غير متوقع أثناء معالجة الفيديو: `{e}`", quote=True)
     finally:
-        # ------------------- تنظيف الملفات المضغوطة المؤقتة فقط -------------------
-        # الملف الأصلي (file_path) لن يُحذف هنا للسماح بإعادة ضغطه
+        # ------------------- تنظيف الملفات المؤقتة -------------------
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                print(f"[{thread_name}] Deleted original file: {file_path}")
+            except Exception as e:
+                print(f"[{thread_name}] Error deleting original file {file_path}: {e}")
         if temp_compressed_filename and os.path.exists(temp_compressed_filename):
             try:
                 os.remove(temp_compressed_filename)
@@ -214,50 +208,13 @@ def process_video_for_compression(video_data):
             except Exception as e:
                 print(f"[{thread_name}] Error deleting temporary file {temp_compressed_filename}: {e}")
         
-        # ------------------- إعادة تعيين حالة الفيديو للسماح بإعادة الضغط -------------------
-        # هذه الخطوة تتم فقط إذا كانت البيانات لا تزال موجودة
+        # ------------------- تنظيف بيانات الفيديو من القاموس -------------------
+        # يتم حذف البيانات من القاموس بعد انتهاء جميع عمليات التحميل والضغط والرفع.
         if button_message_id in user_video_data:
-            # إعادة تهيئة حالة المعالجة لإعادة تفعيل الأزرار
-            user_video_data[button_message_id]['processing_started'] = False 
-            user_video_data[button_message_id]['quality'] = None # إعادة تعيين الجودة المختارة
-            
-            # إعادة إنشاء المؤقت (Timer) للسماح بالاختيار التلقائي إذا لم يتم التفاعل
             if user_video_data[button_message_id].get('timer') and user_video_data[button_message_id]['timer'].is_alive():
-                user_video_data[button_message_id]['timer'].cancel() # إلغاء المؤقت القديم
-            
-            # إعداد المؤقت الجديد
-            timer = threading.Timer(30, auto_select_medium_quality, args=[button_message_id])
-            user_video_data[button_message_id]['timer'] = timer
-            timer.name = f"AutoSelectTimer-{button_message_id}_reset" 
-            timer.start()
-
-            # إعادة إظهار الأزرار الأصلية للسماح بالاختيار مجدداً
-            markup = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton("جودة ضعيفة (CRF 27)", callback_data="crf_27"),
-                        InlineKeyboardButton("جودة متوسطة (CRF 23)", callback_data="crf_23"),
-                        InlineKeyboardButton("جودة عالية (CRF 18)", callback_data="crf_18"),
-                    ],
-                    [
-                        InlineKeyboardButton("❌ إلغاء العملية", callback_data="cancel_compression"),
-                    ]
-                ]
-            )
-            try:
-                app.edit_message_reply_markup(
-                    chat_id=message.chat.id,
-                    message_id=button_message_id,
-                    reply_markup=markup
-                )
-                print(f"[{thread_name}] Resetting buttons for message ID: {button_message_id} after compression completion.")
-            except Exception as e:
-                print(f"[{thread_name}] Error resetting buttons for message ID {button_message_id}: {e}")
-
-            print(f"[{thread_name}] Video data for message ID: {button_message_id} reset for re-processing.")
-        else:
-            # هذه الحالة يمكن أن تحدث إذا تم إلغاء الطلب من مكان آخر أو كانت البيانات قد حذفت
-            print(f"[{thread_name}] Video data for {button_message_id} not found during final cleanup/reset. It might have been canceled externally.")
+                user_video_data[button_message_id]['timer'].cancel()
+            del user_video_data[button_message_id]
+            print(f"[{thread_name}] Cleaned up data for message ID: {button_message_id}")
 
 def auto_select_medium_quality(button_message_id):
     """
@@ -272,7 +229,9 @@ def auto_select_medium_quality(button_message_id):
             print(f"[{thread_name}][Auto-Select] Auto-selecting medium quality for message ID: {button_message_id}")
             
             video_data['quality'] = "crf_23" # اختيار الجودة المتوسطة تلقائيًا
-            
+            # لا نضع 'quality_chosen = True' هنا أو 'processing_started = True'
+            # بل نسمح لـ `process_video_for_compression` بتحديث 'processing_started'
+
             # تحديث رسالة الأزرار في التيليجرام لإعلام المستخدم بالاختيار التلقائي
             try:
                 app.edit_message_reply_markup(
@@ -292,52 +251,45 @@ def auto_select_medium_quality(button_message_id):
 def cancel_compression_action(button_message_id):
     """
     إلغاء عملية الضغط بناءً على طلب المستخدم.
-    تتعامل الآن مع سيناريوهين: إلغاء قبل بدء الضغط، وإلغاء بعد انتهاء دورة الضغط.
     """
     thread_name = threading.current_thread().name
     print(f"\n[{thread_name}] Cancellation requested for Button ID: {button_message_id}.")
     
-    if button_message_id in user_video_data:
-        video_data = user_video_data[button_message_id]
-        file_path = video_data.get('file')
-
-        # إلغاء المؤقت إن كان لا يزال نشطاً
+    # التأكد من أن بيانات الفيديو موجودة وأن الضغط لم يبدأ بعد.
+    # إذا بدأ الضغط، لن نسمح بالإلغاء هنا.
+    if button_message_id in user_video_data and not user_video_data[button_message_id].get('processing_started'):
+        video_data = user_video_data.pop(button_message_id)
+        file_path = video_data.get('file') 
+        
+        # إلغاء المؤقت (auto-selection timer) إن كان لا يزال نشطاً
         if video_data.get('timer') and video_data['timer'].is_alive():
             video_data['timer'].cancel()
             print(f"[{thread_name}] Timer for message ID {button_message_id} cancelled.")
 
-        # إذا كانت المعالجة لم تبدأ بعد (أو انتهت وتم تصفير processing_started)
-        if not video_data.get('processing_started'):
-            print(f"[{thread_name}] Deleting file for Button ID: {button_message_id} as processing has not started yet or has finished a cycle.")
-            # هنا يتم إزالة البيانات وحذف الملف الأصلي لأنه إما لم يتم الضغط
-            # أو أن المستخدم قرر حذفه بعد دورة ضغط واحدة على الأقل.
-            
-            del user_video_data[button_message_id] # إزالة البيانات تماماً
-            
-            try:
-                if file_path and os.path.exists(file_path):
-                    os.remove(file_path)
-                    print(f"[{thread_name}] Deleted original file: {file_path}")
-                elif file_path:
-                    print(f"[{thread_name}] File {file_path} not found for deletion during cancellation (may not have downloaded yet).")
-            except Exception as e:
-                print(f"[{thread_name}] Error deleting original file {file_path} during cancellation: {e}")
-            
-            # محاولة حذف رسالة الأزرار وإعلام المستخدم
-            try:
-                app.delete_messages(chat_id=video_data['message'].chat.id, message_ids=button_message_id)
-                print(f"[{thread_name}] Deleted quality selection message {button_message_id}.")
-                video_data['message'].reply_text("❌ تم إلغاء العملية وحذف الملفات ذات الصلة.", quote=True)
-            except Exception as e:
-                print(f"[{thread_name}] Error deleting messages after cancellation: {e}")
-            
-            print(f"[{thread_name}] Compression/File removal canceled for message ID: {button_message_id}")
-
-        # إذا كانت المعالجة قيد التنفيذ
-        elif video_data.get('processing_started'):
-            print(f"[{thread_name}] Cancellation denied for Button ID: {button_message_id}. Processing has already started and cannot be stopped.")
-            # يمكنك إرسال إشعار للمستخدم هنا، ولكن callback_query.answer تم التعامل معها بالفعل في `compression_choice_callback`
-
+        # محاولة حذف الملف الأصلي الذي تم تنزيله
+        try:
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"[{thread_name}] Deleted file after cancellation: {file_path}")
+            elif file_path:
+                print(f"[{thread_name}] File {file_path} not found for deletion during cancellation (may not have downloaded yet).")
+        except Exception as e:
+            print(f"[{thread_name}] Error deleting file {file_path} during cancellation: {e}")
+        
+        # محاولة حذف رسالة الأزرار وإعلام المستخدم
+        try:
+            app.delete_messages(chat_id=video_data['message'].chat.id, message_ids=button_message_id)
+            print(f"[{thread_name}] Deleted quality selection message {button_message_id}.")
+            video_data['message'].reply_text("❌ تم إلغاء عملية الضغط وحذف الملفات ذات الصلة.", quote=True)
+        except Exception as e:
+            print(f"[{thread_name}] Error deleting messages after cancellation: {e}")
+        
+        print(f"[{thread_name}] Compression canceled for message ID: {button_message_id}")
+    elif button_message_id in user_video_data and user_video_data[button_message_id].get('processing_started'):
+        print(f"[{thread_name}] Cancellation denied for Button ID: {button_message_id}. Processing has already started.")
+        # هنا يمكنك اختيار تحديث الرسالة لإخبار المستخدم بأن الإلغاء لم يعد ممكناً
+        # مثلا: callback_query.answer("العملية جارية بالفعل، لا يمكن الإلغاء الآن.", show_alert=True)
+        # ولكن يجب أن يتم هذا داخل `compression_choice_callback` قبل استدعاء `cancel_compression_action`
     else:
         print(f"[{thread_name}] No video data found or invalid state for cancellation of Button ID: {button_message_id}.")
 
@@ -354,6 +306,7 @@ def start_command(client, message):
 def handle_incoming_video(client, message):
     """
     معالجة الفيديوهات والرسوم المتحركة الجديدة المرسلة.
+    تبدأ عملية التحميل بشكل متوازي وتعد البيانات للمراحل التالية.
     """
     thread_name = threading.current_thread().name
     print(f"\n--- [{thread_name}] New Incoming Video ---")
@@ -371,14 +324,15 @@ def handle_incoming_video(client, message):
     )
     print(f"[{thread_name}] Download submission for Message ID: {message.id} completed. Bot is ready for next incoming message.")
 
+    # تخزين البيانات الأولية للفيديو
     user_video_data[message.id] = {
         'message': message,
         'download_future': download_future,
-        'file': None, # سيتم تعيين مساره لاحقاً بعد التحميل
+        'file': None,
         'button_message_id': None,
         'timer': None,
-        'quality': None, 
-        'processing_started': False # البدء بحالة "لم تبدأ المعالجة"
+        'quality': None, # تم إضافتها لسهولة التتبع
+        'processing_started': False # علامة جديدة لتتبع بدء الضغط الفعلي
     }
     
     threading.Thread(target=post_download_actions, args=[message.id], name=f"PostDownloadThread-{message.id}").start()
@@ -401,10 +355,9 @@ def post_download_actions(original_message_id):
     try:
         print(f"[{thread_name}] Waiting for download of Message ID: {original_message_id} to complete...")
         file_path = download_future.result() 
-        video_data['file'] = file_path # تعيين مسار الملف الأصلي هنا
+        video_data['file'] = file_path 
         print(f"[{thread_name}] Download complete for original message ID {original_message_id}. File path: {file_path}")
 
-        # بناء الأزرار نفسها (جودة + إلغاء)
         markup = InlineKeyboardMarkup(
             [
                 [
@@ -423,7 +376,7 @@ def post_download_actions(original_message_id):
             quote=True
         )
         
-        # تحديث المفتاح في القاموس user_video_data
+        # تحديث المفتاح في القاموس user_video_data من original_message_id إلى button_message_id
         video_data['button_message_id'] = reply_message.id
         user_video_data[reply_message.id] = user_video_data.pop(original_message_id)
 
@@ -464,15 +417,16 @@ def compression_choice_callback(client, callback_query):
 
     video_data = user_video_data[message_id]
 
-    # إذا كانت المعالجة قيد التنفيذ، يتم منع أي تغييرات
+    # الشرط هنا تغير: نمنع إعادة التفاعل فقط إذا كانت عملية الضغط قد بدأت بالفعل.
+    # إذا لم تبدأ بعد، يُسمح للمستخدم بتغيير الجودة أو الإلغاء.
     if video_data.get('processing_started'):
-        callback_query.answer("العملية جارية بالفعل، لا يمكن تغيير الجودة أو الإلغاء الآن.", show_alert=True)
+        callback_query.answer("العملية جارية بالفعل، لا يمكن تغيير الجودة الآن.", show_alert=True)
         return
 
     # معالجة الضغط على زر الإلغاء
     if callback_query.data == "cancel_compression":
         callback_query.answer("يتم إلغاء العملية...", show_alert=False)
-        cancel_compression_action(message_id) # استدعاء الدالة المحدثة للحذف
+        cancel_compression_action(message_id)
         return
 
     # إيقاف المؤقت التلقائي لأن المستخدم اختار يدوياً
@@ -494,9 +448,12 @@ def compression_choice_callback(client, callback_query):
     # تعيين الجودة المختارة
     video_data['quality'] = callback_query.data
     
+    # لا نضع 'processing_started = True' هنا، بل نتركها لـ `process_video_for_compression`
+    # لضمان أنها تُعين فقط عند بدء الضغط الفعلي.
+
     callback_query.answer("تم استلام اختيارك. جاري الضغط...", show_alert=False)
 
-    # تحديث الأزرار لتأكيد بدء المعالجة
+    # تحديث الأزرار لتجنب التفاعل المستقبلي أو لتأكيد الاختيار
     try:
         app.edit_message_reply_markup(
             chat_id=callback_query.message.chat.id,
