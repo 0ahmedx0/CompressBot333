@@ -146,7 +146,7 @@ def process_video_for_compression(video_data):
                     app.copy_message(
                         chat_id=CHANNEL_ID,
                         from_chat_id=message.chat.id,
-                        message_ids=message.id,
+                        message_id=message.id, # <--- تم التغيير هنا من 'message_ids' إلى 'message_id'
                         caption="الفيديو الأصلي"
                     )
                     print(f"[{thread_name}] Original video (ID: {message.id}) copied to channel: {CHANNEL_ID}.")
