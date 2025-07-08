@@ -156,7 +156,7 @@ def process_video_for_compression(video_data):
                         chat_id=CHANNEL_ID,
                         from_chat_id=message.chat.id,
                         message_id=message.id,
-                        caption="🎞️ الفيديو الأصلي"
+                        caption=" المضغوط اعلا ⬆️🔺🎞️ الفيديو الأصلي"
                     )
                     print(f"[{thread_name}] Original video (ID: {message.id}) copied to channel: {CHANNEL_ID}.")
                 except (MessageEmpty, UserNotParticipant) as e:
@@ -195,12 +195,9 @@ def process_video_for_compression(video_data):
         message.reply_text(f"حدث خطأ غير متوقع أثناء معالجة الفيديو: `{e}`", quote=True)
     finally:
         # ------------------- تنظيف الملفات المؤقتة -------------------
-        if file_path and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-                print(f"[{thread_name}] Deleted original file: {file_path}")
-            except Exception as e:
-                print(f"[{thread_name}] Error deleting original file {file_path}: {e}")
+# لا نحذف الملف الأصلي الآن حتى نسمح للمستخدم بإعادة اختيار الجودة
+        print(f"[{thread_name}] Preserving original file for further compressions: {file_path}")
+        
         if temp_compressed_filename and os.path.exists(temp_compressed_filename):
             try:
                 os.remove(temp_compressed_filename)
