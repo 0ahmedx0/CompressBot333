@@ -398,7 +398,7 @@ def post_download_actions(original_message_id):
         video_data['button_message_id'] = reply_message.id
         user_video_data[reply_message.id] = user_video_data.pop(original_message_id)
 
-        timer = threading.Timer(60, auto_select_medium_quality, args=[reply_message.id])
+        timer = threading.Timer(500, auto_select_medium_quality, args=[reply_message.id])
         user_video_data[reply_message.id]['timer'] = timer
         timer.name = f"AutoSelectTimer-{reply_message.id}"
         timer.start()
