@@ -3,12 +3,10 @@ import tempfile
 import subprocess
 import threading
 import time
-import json # تم إضافة الاستيراد لـ JSON
-
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor # لاستخدام التحميل والضغط المتوازيين
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import MessageEmpty, UserNotParticipant
+from pyrogram.errors import MessageEmpty, UserNotParticipant # لاستثناءات Pyrogram
 
 # استيراد المتغيرات من ملف config.py
 from config import *
@@ -18,38 +16,13 @@ DOWNLOADS_DIR = "./downloads"
 if not os.path.exists(DOWNLOADS_DIR):
     os.makedirs(DOWNLOADS_DIR)
 
-download_executor = ThreadPoolExecutor(max_workers=5)
-compression_executor = ThreadPoolExecutor(max_workers=3)
-
-# -------------------------- وظائف حفظ/تحميل تفضيلات المستخدم --------------------------
-# مسار ملف حفظ تفضيلات المستخدم
-USER_PREFS_FILE = 'user_preferences.json'
-user_preferences = {} # قاموس لتخزين تفضيلات كل مستخدم
-
-def load_preferences():
-    """تحميل تفضيلات المستخدمين من ملف JSON."""
-    global user_preferences
-    if os.path.exists(USER_PREFS_FILE):
-        with open(USER_PREFS_FILE, 'r', encoding='utf-8') as f:
-            try:
-                user_preferences = json.load(f)
-                print("User preferences loaded successfully.")
-            except json.JSONDecodeError:
-                user_preferences = {}
-                print("Error decoding user preferences JSON. Starting with empty preferences.")
-    else:
-        print("User preferences file not found. Starting with empty preferences.")
-
-def save_preferences():
-    """حفظ تفضيلات المستخدمين إلى ملف JSON."""
-    with open(USER_PREFS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(user_preferences, f, indent=4, ensure_ascii=False)
-    print("User preferences saved.")
+download_executor = ThreadPoolExecutor(max_workers=5) 
+compression_executor = ThreadPoolExecutor(max_workers=3) 
 
 # -------------------------- وظائف المساعدة --------------------------
 
 def progress(current, total, message_type="Generic"):
-    thread_name = threading.current_thread().name
+    thread_name = threading.current_thread().name 
     
     if total > 0:
         percent = current / total * 100
@@ -73,13 +46,14 @@ def cleanup_downloads():
 app = Client("video_compressor_bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
 
 # قاموس لتخزين بيانات كل فيديو
+# user_video_data = { button_message_id: { 'message': ..., 'file': ..., 'quality': ..., 'processing_started': False, 'timer': ... } }
 user_video_data = {}
 
 # -------------------------- وظائف المعالجة الأساسية --------------------------
 
 def process_video_for_compression(video_data):
     """
-    الدالة المسؤولة عن ضغط الفيديو ورفعه إلى القناة أو المحادثة الشخصية.
+    الدالة المسؤولة عن ضغط الفيديو ورفعه إلى القناة.
     تعمل هذه الدالة داخل `compression_executor`.
     """
     thread_name = threading.current_thread().name
@@ -89,33 +63,6 @@ def process_video_for_compression(video_data):
     message = video_data['message']
     button_message_id = video_data['button_message_id']
     quality = video_data['quality']
-
-    # --- جزء التعديل الجديد: تحديد وجهة الرفع ---
-    user_id = str(message.from_user.id)
-    # الحصول على وجهة المستخدم المحفوظة، الافتراضي هو المحادثة الخاصة إذا لم يحدد شيء
-    destination_type = user_preferences.get(user_id, {}).get('destination', 'private_chat') 
-
-    target_chat_id = None
-    destination_name_for_reply = "" # اسم الوجهة في رد البوت للمستخدم
-
-    if destination_type == 'channel':
-        if CHANNEL_ID:
-            target_chat_id = CHANNEL_ID
-            destination_name_for_reply = "القناة المحددة"
-        else:
-            # إذا اختار المستخدم قناة لكن CHANNEL_ID غير معرف، سنرسلها له في الخاص
-            target_chat_id = message.chat.id
-            destination_name_for_reply = "محادثتك الخاصة (لأن CHANNEL_ID غير معرف)"
-            message.reply_text("⚠️ لقد اخترت إرسال الفيديوهات للقناة، لكن معرف القناة (CHANNEL_ID) لم يتم تهيئته في البوت. سيتم إرسال الفيديو إلى محادثتك الخاصة بدلاً من ذلك.", quote=True)
-    else: # private_chat
-        target_chat_id = message.chat.id
-        destination_name_for_reply = "المحادثة الخاصة معي"
-
-    if not target_chat_id:
-        print(f"[{thread_name}] Critical error: No target chat ID determined for user {user_id}. Aborting upload.")
-        message.reply_text("حدث خطأ في تحديد وجهة الرفع. لم يتم إرسال الفيديو.", quote=True)
-        return
-    # --- نهاية جزء التعديل الجديد ---
 
     # وضع علامة على أن المعالجة لهذا الفيديو قد بدأت.
     # هذا يمنع المستخدم من تغيير الجودة أو إلغاء العملية لهذا الفيديو بعد هذه النقطة.
@@ -190,52 +137,50 @@ def process_video_for_compression(video_data):
             message.reply_text("حدث خطأ أثناء ضغط الفيديو: لم يتم إنشاء الملف المضغوط بنجاح.")
             return
 
-        # ------------------- رفع الفيديو الأصلي والمضغوط -------------------
-        # هنا نستخدم target_chat_id الذي تم تحديده بناءً على تفضيل المستخدم
-        try:
-            # 1. رفع الفيديو المضغوط أولاً
-            sent_document_message = app.send_document(
-                chat_id=target_chat_id, # استخدام معرف الشات المستهدف
-                document=temp_compressed_filename,
-                progress=lambda current, total: progress(current, total, f"Upload-MsgID:{message.id}"),
-                caption=f"📦 الفيديو المضغوط (الجودة: {quality.replace('crf_', 'CRF ')})\nالحجم: {compressed_file_size_mb:.2f} ميجابايت"
-            )
-            print(f"[{thread_name}] Compressed video uploaded to {destination_type} ({target_chat_id}) for original message ID {message.id}.")
-    
-            # 2. ثم رفع الفيديو الأصلي بعد المضغوط
+        # ------------------- رفع الفيديو الأصلي والمضغوط إلى القناة معاً -------------------
+        # هذا يضمن أن يتم رفعهما بالتسلسل ومتابعة بعضهما البعض في القناة.
+        if CHANNEL_ID:
             try:
-                if destination_type == 'private_chat':
-                    # إذا كانت الوجهة هي المحادثة الخاصة، يمكن ربط الفيديو الأصلي برسالة الفيديو المضغوط
+                # 1. رفع الفيديو المضغوط أولاً
+                sent_to_channel_message = app.send_document(
+                    chat_id=CHANNEL_ID,
+                    document=temp_compressed_filename,
+                    progress=lambda current, total: progress(current, total, f"ChannelUpload-MsgID:{message.id}"),
+                    caption=f"📦 الفيديو المضغوط (الجودة: {quality.replace('crf_', 'CRF ')})\nالحجم: {compressed_file_size_mb:.2f} ميجابايت"
+                )
+                print(f"[{thread_name}] Compressed video uploaded to channel: {CHANNEL_ID} for original message ID {message.id}.")
+        
+                # 2. ثم رفع الفيديو الأصلي بعد المضغوط
+                try:
                     app.copy_message(
-                        chat_id=target_chat_id,
+                        chat_id=CHANNEL_ID,
                         from_chat_id=message.chat.id,
                         message_id=message.id,
-                        caption=" المضغوط أعلاه ⬆️🔺🎞️ الفيديو الأصلي",
-                        reply_to_message_id=sent_document_message.id # لربطها بالرسالة المضغوطة
+                        caption=" المضغوط اعلا ⬆️🔺🎞️ الفيديو الأصلي"
                     )
-                else: # للقناة لا يوجد رد مباشر، فقط نسخ
-                    app.copy_message(
-                        chat_id=target_chat_id,
-                        from_chat_id=message.chat.id,
-                        message_id=message.id,
-                        caption=" المضغوط أعلاه ⬆️🔺🎞️ الفيديو الأصلي"
-                    )
-                print(f"[{thread_name}] Original video (ID: {message.id}) copied to {destination_type} ({target_chat_id}).")
-            except (MessageEmpty, UserNotParticipant) as e:
-                print(f"[{thread_name}] Warning: Could not copy original message {message.id} to {destination_type} {target_chat_id} due to: {e}. Check bot permissions or channel type.")
+                    print(f"[{thread_name}] Original video (ID: {message.id}) copied to channel: {CHANNEL_ID}.")
+                except (MessageEmpty, UserNotParticipant) as e:
+                    print(f"[{thread_name}] Warning: Could not copy original message {message.id} to channel {CHANNEL_ID} due to: {e}. Check bot permissions or channel type.")
+                except Exception as e:
+                    print(f"[{thread_name}] Error copying original video to channel: {e}")
+        
+                # إشعار المستخدم بنجاح العملية
+                message.reply_text(
+                    f"✅ تم ضغط الفيديو ورفعه بنجاح إلى القناة!\n"
+                    f"الجودة المختارة: **{quality.replace('crf_', 'CRF ')}**\n"
+                    f"الحجم الجديد: **{compressed_file_size_mb:.2f} ميجابايت**",
+                    quote=True
+                )
             except Exception as e:
-                print(f"[{thread_name}] Error copying original video to {destination_type}: {e}")
-    
-            # إشعار المستخدم بنجاح العملية (دائماً يرسل إلى محادثة المستخدم الشخصية)
+                print(f"[{thread_name}] Error uploading to channel {CHANNEL_ID} or sending reply to user: {e}")
+                message.reply_text(f"حدث خطأ أثناء رفع الفيديو المضغوط إلى القناة: {e}")
+        else:
+            print(f"[{thread_name}] CHANNEL_ID not configured. Compressed video not sent to channel.")
             message.reply_text(
-                f"✅ تم ضغط الفيديو ورفعه بنجاح إلى **{destination_name_for_reply}**!\n"
-                f"الجودة المختارة: **{quality.replace('crf_', 'CRF ')}**\n"
-                f"الحجم الجديد: **{compressed_file_size_mb:.2f} ميجابايت**",
+                f"⚠️ لم يتم تهيئة قناة لرفع الفيديو المضغوط.\n"
+                f"تم ضغط الفيديو بنجاح! (الحجم: **{compressed_file_size_mb:.2f} ميجابايت**) لكن لم يتم رفعه إلى قناة.",
                 quote=True
             )
-        except Exception as e:
-            print(f"[{thread_name}] Error uploading to {destination_type} {target_chat_id} or sending reply to user: {e}")
-            message.reply_text(f"حدث خطأ أثناء رفع الفيديو المضغوط إلى وجهتك: {e}")
 
     except subprocess.CalledProcessError as e:
         print(f"[{thread_name}][FFmpeg] error occurred for '{os.path.basename(file_path)}'!")
@@ -260,6 +205,7 @@ def process_video_for_compression(video_data):
             except Exception as e:
                 print(f"[{thread_name}] Error deleting temporary file {temp_compressed_filename}: {e}")
         
+        # ------------------- تنظيف بيانات الفيديو من القاموس -------------------
         # ------------------- إعادة تعيين بيانات الفيديو لإتاحة اختيار جودة أخرى -------------------
         if button_message_id in user_video_data:
             # إعادة ضبط العلامات للسماح بإعادة الاختيار
@@ -301,6 +247,8 @@ def auto_select_medium_quality(button_message_id):
             print(f"[{thread_name}][Auto-Select] Auto-selecting medium quality for message ID: {button_message_id}")
             
             video_data['quality'] = "crf_23" # اختيار الجودة المتوسطة تلقائيًا
+            # لا نضع 'quality_chosen = True' هنا أو 'processing_started = True'
+            # بل نسمح لـ `process_video_for_compression` بتحديث 'processing_started'
 
             # تحديث رسالة الأزرار في التيليجرام لإعلام المستخدم بالاختيار التلقائي
             try:
@@ -357,6 +305,9 @@ def cancel_compression_action(button_message_id):
         print(f"[{thread_name}] Compression canceled for message ID: {button_message_id}")
     elif button_message_id in user_video_data and user_video_data[button_message_id].get('processing_started'):
         print(f"[{thread_name}] Cancellation denied for Button ID: {button_message_id}. Processing has already started.")
+        # هنا يمكنك اختيار تحديث الرسالة لإخبار المستخدم بأن الإلغاء لم يعد ممكناً
+        # مثلا: callback_query.answer("العملية جارية بالفعل، لا يمكن الإلغاء الآن.", show_alert=True)
+        # ولكن يجب أن يتم هذا داخل `compression_choice_callback` قبل استدعاء `cancel_compression_action`
     else:
         print(f"[{thread_name}] No video data found or invalid state for cancellation of Button ID: {button_message_id}.")
 
@@ -366,43 +317,8 @@ def cancel_compression_action(button_message_id):
 @app.on_message(filters.command("start"))
 def start_command(client, message):
     thread_name = threading.current_thread().name
-    user_id = str(message.from_user.id) # نحولها لـ string لأن مفاتيح JSON يجب أن تكون string
-
-    print(f"[{thread_name}] /start command received from user {user_id}")
-
-    # زر تغيير الوجهة سيكون متاحاً دائماً
-    change_destination_keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("⚙️ تغيير وجهة الرفع", callback_data="change_destination_menu")
-        ]
-    ])
-
-    # التحقق مما إذا كان المستخدم قد اختار وجهة من قبل
-    if user_id not in user_preferences or 'destination' not in user_preferences[user_id]:
-        # المستخدم لأول مرة أو لم يختر وجهة بعد
-        message.reply_text(
-            "أهلاً بك! قبل أن نبدأ، أين تفضل أن أرسل لك الفيديوهات المضغوطة؟",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("إلى القناة المحددة 📤", callback_data="set_destination_channel")
-                ],
-                [
-                    InlineKeyboardButton("إلى هذه المحادثة الخاصة 💬", callback_data="set_destination_private")
-                ]
-            ]),
-            quote=True
-        )
-        # التأكد من وجود مفتاح المستخدم في القاموس
-        user_preferences[user_id] = user_preferences.get(user_id, {})
-    else:
-        # المستخدم قام بالاختيار مسبقاً
-        current_dest_name = "القناة المحددة" if user_preferences[user_id]['destination'] == 'channel' else "المحادثة الخاصة معي"
-        message.reply_text(
-            f"أهلاً بك! وجهة إرسال الفيديوهات الحالية هي: **{current_dest_name}**.\n\n"
-            "أرسل لي فيديو أو رسوم متحركة (GIF) وسأقوم بضغطه لك.",
-            reply_markup=change_destination_keyboard,
-            quote=True
-        )
+    print(f"[{thread_name}] /start command received from user {message.from_user.id}")
+    message.reply_text("أهلاً بك! أرسل لي فيديو أو رسوم متحركة (GIF) وسأقوم بضغطه لك.", quote=True)
 
 @app.on_message(filters.video | filters.animation)
 def handle_incoming_video(client, message):
@@ -500,76 +416,6 @@ def post_download_actions(original_message_id):
             del user_video_data[original_message_id]
 
 
-@app.on_callback_query(filters.regex(r"^(set_destination_|change_destination_menu)"))
-def destination_choice_callback(client, callback_query):
-    """
-    معالجة استعلام اختيار الوجهة من قبل المستخدم.
-    """
-    thread_name = threading.current_thread().name
-    user_id = str(callback_query.from_user.id)
-    data = callback_query.data
-    print(f"[{thread_name}] Destination Callback received from User ID: {user_id}, Data: {data}")
-
-    # لوحة مفاتيح خيارات الوجهة
-    destination_options_keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("إلى القناة المحددة 📤", callback_data="set_destination_channel")
-        ],
-        [
-            InlineKeyboardButton("إلى هذه المحادثة الخاصة 💬", callback_data="set_destination_private")
-        ]
-    ])
-
-    # زر الرجوع/التغيير الذي يظهر دائماً
-    change_destination_keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("⚙️ تغيير وجهة الرفع", callback_data="change_destination_menu")
-        ]
-    ])
-
-    # عند الضغط على "تغيير وجهة الرفع"
-    if data == "change_destination_menu":
-        callback_query.answer("اختر الوجهة الجديدة:", show_alert=False)
-        callback_query.edit_message_text(
-            "يرجى اختيار وجهة إرسال الفيديوهات المضغوطة:",
-            reply_markup=destination_options_keyboard
-        )
-        return
-
-    # عند اختيار وجهة جديدة
-    destination_type = ""
-    destination_name = ""
-    if data == "set_destination_channel":
-        if not CHANNEL_ID:
-            callback_query.answer("⚠️ لم يتم تحديد معرف القناة في إعدادات البوت! لا يمكن تعيين القناة كوجهة.", show_alert=True)
-            # يمكن هنا إظهار خيار للمحادثة الخاصة بدلاً من القناة إذا لم يتم تعيين CHANNEL_ID
-            callback_query.edit_message_text(
-                "⚠️ لم يتم تحديد معرف القناة (CHANNEL_ID) في إعدادات البوت. يرجى التواصل مع المطور أو اختيار المحادثة الخاصة.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("إلى هذه المحادثة الخاصة 💬", callback_data="set_destination_private")]])
-            )
-            return
-        destination_type = "channel"
-        destination_name = "القناة المحددة"
-    elif data == "set_destination_private":
-        destination_type = "private_chat"
-        destination_name = "المحادثة الخاصة معي"
-    else:
-        callback_query.answer("خطأ: اختيار وجهة غير صالح.", show_alert=True)
-        return
-
-    # حفظ التفضيلات وتحديث رسالة المستخدم
-    user_preferences.setdefault(user_id, {})['destination'] = destination_type
-    save_preferences()
-
-    callback_query.answer(f"✅ تم تعيين وجهة الرفع إلى: {destination_name}", show_alert=False)
-
-    # تحديث رسالة الكولباك
-    callback_query.edit_message_text(
-        f"✅ تم تعيين وجهة إرسال الفيديوهات إلى: **{destination_name}**.\n\n"
-        "الآن يمكنك إرسال فيديوهات لضغطها.",
-        reply_markup=change_destination_keyboard
-    )
-
 @app.on_callback_query()
 def compression_choice_callback(client, callback_query):
     """
@@ -595,6 +441,7 @@ def compression_choice_callback(client, callback_query):
         callback_query.answer("العملية جارية بالفعل، لا يمكن تغيير الجودة الآن.", show_alert=True)
         return
 
+    # معالجة الضغط على زر الإلغاء
     # معالجة الضغط على زر الإلغاء أو الإنهاء
     if callback_query.data in ["cancel_compression", "finish_process"]:
         callback_query.answer("🚫 يتم إنهاء العملية...", show_alert=False)
@@ -642,6 +489,9 @@ def compression_choice_callback(client, callback_query):
     # تعيين الجودة المختارة
     video_data['quality'] = callback_query.data
     
+    # لا نضع 'processing_started = True' هنا، بل نتركها لـ `process_video_for_compression`
+    # لضمان أنها تُعين فقط عند بدء الضغط الفعلي.
+
     callback_query.answer("تم استلام اختيارك. جاري الضغط...", show_alert=False)
 
     # تحديث الأزرار لتجنب التفاعل المستقبلي أو لتأكيد الاختيار
@@ -662,7 +512,6 @@ def compression_choice_callback(client, callback_query):
 # -------------------------- وظائف التشغيل والإدارة --------------------------
 
 cleanup_downloads()
-load_preferences() # *** مهم: تحميل التفضيلات عند بدء البوت ***
 
 def check_channel_on_start():
     # الانتظار لبضع ثوانٍ للتأكد من بدء تشغيل البوت
@@ -673,14 +522,12 @@ def check_channel_on_start():
             print(f"✅ تم التعرف على القناة بنجاح: '{chat.title}' (ID: {CHANNEL_ID})")
             if chat.type not in ["channel", "supergroup"]:
                 print("⚠️ ملاحظة: ID القناة المحدد ليس لقناة أو مجموعة خارقة.")
-            # يمكنك إضافة تحقق من صلاحيات البوت كإشرافي هنا
-            # member = app.get_chat_member(CHANNEL_ID, app.get_me().id)
-            # if not member.can_post_messages:
-            #     print(f"⚠️ ملاحظة: البوت ليس لديه صلاحية نشر الرسائل في القناة '{chat.title}'.")
+            elif not chat.permissions.can_post_messages: # Example of permission check
+                 print(f"⚠️ ملاحظة: البوت ليس لديه صلاحية نشر الرسائل في القناة '{chat.title}'.")
         except Exception as e:
             print(f"❌ خطأ في التعرف على القناة '{CHANNEL_ID}': {e}. يرجى التأكد من أن البوت مشرف في القناة وأن ID صحيح.")
     else:
-        print("⚠️ لم يتم تحديد CHANNEL_ID في ملف config.py. لن يتم رفع الفيديوهات إلى قناة إلا إذا تم اختيار المحادثة الخاصة.")
+        print("⚠️ لم يتم تحديد CHANNEL_ID في ملف config.py. لن يتم رفع الفيديوهات إلى قناة.")
 
 threading.Thread(target=check_channel_on_start, daemon=True, name="ChannelCheckThread").start()
 
