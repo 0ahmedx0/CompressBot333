@@ -26,7 +26,7 @@ user_settings = {}
 DEFAULT_SETTINGS = {
     'encoder': 'h264_nvenc',
     'auto_compress': False,
-    'auto_quality_value': 25
+    'auto_quality_value': 30
 }
 
 def get_user_settings(user_id):
@@ -330,10 +330,10 @@ def post_download_actions(original_message_id):
                  InlineKeyboardButton("عالية (CRF 18)", callback_data="crf_18")],
                 [InlineKeyboardButton("❌ إلغاء العملية", callback_data="cancel_compression")]
             ])
-            reply_message = message.reply_text("✅ تم تنزيل الفيديو.\nاختر جودة الضغط، أو سيتم اختيار جودة متوسطة بعد **30 ثانية**:", reply_markup=markup, quote=True)
+            reply_message = message.reply_text("✅ تم تنزيل الفيديو.\nاختر جودة الضغط، أو سيتم اختيار جودة متوسطة بعد **300 ثانية**:", reply_markup=markup, quote=True)
             video_data['button_message_id'] = reply_message.id
             user_video_data[reply_message.id] = user_video_data.pop(original_message_id)
-            timer = threading.Timer(30, auto_select_medium_quality, args=[reply_message.id])
+            timer = threading.Timer(300, auto_select_medium_quality, args=[reply_message.id])
             user_video_data[reply_message.id]['timer'] = timer
             timer.start()
     except Exception as e:
