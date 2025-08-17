@@ -112,11 +112,11 @@ def process_video_for_compression(video_data):
         
         if isinstance(quality, str) and 'crf_' in quality:
             quality_value = int(quality.split('_')[1])
-            if quality_value == 27: preset = "fast" if "nvenc" in encoder else "veryfast"
+            if quality_value == 27: preset = "veryfast" if "nvenc" in encoder else "veryfast"
             elif quality_value == 18: preset = "slow"
         elif isinstance(quality, int):
             quality_value = quality
-            preset = "fast"
+            preset = "veryfast"
 
         else:
             message.reply_text("حدث خطأ داخلي: جودة ضغط غير صالحة.", quote=True)
