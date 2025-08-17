@@ -26,7 +26,7 @@ user_settings = {}
 DEFAULT_SETTINGS = {
     'encoder': 'h264_nvenc',
     'auto_compress': False,
-    'auto_quality_value': 30
+    'auto_quality_value': 25
 }
 
 def get_user_settings(user_id):
@@ -75,9 +75,6 @@ def process_video_for_compression(video_data):
     encoder = user_prefs['encoder']
     print(f"[{thread_name}] Using encoder '{encoder}' for user {user_id} with quality '{quality}'.")
 
-    # تحديد رسالة "جاري الضغط تلقائيًا" لحذفها لاحقًا
-    auto_compress_status_message_id = video_data.get('auto_compress_status_message_id')
-
     if button_message_id and button_message_id in user_video_data:
         user_video_data[button_message_id]['processing_started'] = True
         try:
@@ -102,13 +99,12 @@ def process_video_for_compression(video_data):
 
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir=DOWNLOADS_DIR) as temp_file:
             temp_compressed_filename = temp_file.name
-        
+
         common_ffmpeg_part = (
             f'ffmpeg -y -i "{file_path}" -c:v {encoder} -pix_fmt {VIDEO_PIXEL_FORMAT} '
             f'-c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} '
-            f'-ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -map_metadata -1'
+            f'-ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1'
         )
-        
         # ===== هذا هو التعديل المنطقي المطلوب (منطق موحد) =====
         quality_value = 0
         
@@ -120,7 +116,7 @@ def process_video_for_compression(video_data):
         else:
             message.reply_text("حدث خطأ داخلي: جودة ضغط غير صالحة.", quote=True)
             return
-
+    
         # الخطوة 2: تحديد الإعداد المسبق بناءً على القيمة الرقمية ونوع المرمز
         preset = "fast" # قيمة افتراضية آمنة تعمل على الجميع
         
@@ -132,7 +128,6 @@ def process_video_for_compression(video_data):
             preset = "veryfast" if encoder == 'libx264' else "fast"
         # القيم بين 24-26 ستستخدم الإعداد الافتراضي "fast"
         # ========================================================
-        
         quality_param = "cq" if "nvenc" in encoder else "crf"
         quality_settings = f'-{quality_param} {quality_value} -preset {preset}'
         ffmpeg_command = f'{common_ffmpeg_part} {quality_settings} "{temp_compressed_filename}"'
@@ -154,7 +149,7 @@ def process_video_for_compression(video_data):
                 )
                 app.copy_message(
                     chat_id=CHANNEL_ID, from_chat_id=message.chat.id, message_id=message.id,
-                    caption=" المضغوط اعلا ⬆️🔺🎞️ الفيديو الأصلي"
+                    caption=" المضغوط  ⬆️🔺🎞️ الفيديو الأصلي"
                 )
                 message.reply_text(
                     f"✅ تم ضغط الفيديو ورفعه بنجاح!\n"
@@ -175,18 +170,19 @@ def process_video_for_compression(video_data):
     except Exception as e:
         print(f"[{thread_name}] General error during video processing for '{os.path.basename(file_path)}': {e}")
         message.reply_text(f"حدث خطأ غير متوقع أثناء معالجة الفيديو: `{e}`", quote=True)
-    finally:
-        if temp_compressed_filename and os.path.exists(temp_compressed_filename):
-            os.remove(temp_compressed_filename)
-        
-        # حذف رسالة "تم التنزيل. جاري الضغط تلقائيًا..."
-        if auto_compress_status_message_id:
-            try:
-                app.delete_messages(chat_id=message.chat.id, message_ids=auto_compress_status_message_id)
-                print(f"[{thread_name}] Deleted auto-compress status message {auto_compress_status_message_id}.")
-            except Exception as e:
-                print(f"[{thread_name}] Error deleting auto-compress status message {auto_compress_status_message_id}: {e}")
-
+     finally:
+         if temp_compressed_filename and os.path.exists(temp_compressed_filename):
+             os.remove(temp_compressed_filename)
+         
+         # حذف رسالة "تم التنزيل. جاري الضغط تلقائيًا..." <--- التعديل هنا
+         auto_compress_status_message_id = video_data.get('auto_compress_status_message_id')
+         if auto_compress_status_message_id:
+             try:
+                 app.delete_messages(chat_id=message.chat.id, message_ids=auto_compress_status_message_id)
+                 print(f"[{thread_name}] Deleted auto-compress status message {auto_compress_status_message_id}.")
+             except Exception as e:
+                 print(f"[{thread_name}] Error deleting auto-compress status message {auto_compress_status_message_id}: {e}")
+    
         if button_message_id and button_message_id in user_video_data:
             user_video_data[button_message_id]['processing_started'] = False
             user_video_data[button_message_id]['quality'] = None
@@ -197,19 +193,15 @@ def process_video_for_compression(video_data):
                      InlineKeyboardButton("عالية (CRF 18)", callback_data="crf_18")],
                     [InlineKeyboardButton("❌ إنهاء العملية", callback_data="finish_process")]
                 ])
-                # يجب أن نتحقق من وجود الرسالة قبل التعديل، فقد تكون حذفت بالخطأ
                 app.edit_message_text(
                     chat_id=message.chat.id, message_id=button_message_id,
                     text="🎞️ تم الانتهاء من ضغط الفيديو. يمكنك اختيار جودة أخرى، أو إنهاء العملية:",
                     reply_markup=markup)
-            except MessageEmpty: # إذا كانت الرسالة قد حذفت بالفعل
-                print(f"[{thread_name}] Message {button_message_id} was already deleted, skipping edit.")
             except Exception as e:
                 print(f"[{thread_name}] Error re-displaying quality options: {e}")
-        else: # هذه الحالة تحدث عادة للضغط التلقائي
+        else:
             if os.path.exists(file_path): os.remove(file_path)
-            # إذا لم تكن هناك رسالة أزرار، فاحذف الفيديو_بيانات من القاموس
-            if message.id in user_video_data: del user_video_data[message.id] # (في حالة التنزيل العادي قبل ربطه برسالة الزر)
+            if message.id in user_video_data: del user_video_data[message.id]
 
 def auto_select_medium_quality(button_message_id):
     thread_name = threading.current_thread().name
@@ -219,15 +211,9 @@ def auto_select_medium_quality(button_message_id):
         if not video_data.get('processing_started'):
             video_data['quality'] = "crf_23"
             try:
-                # حذف الأزرار الموجودة
                 app.edit_message_reply_markup(
                     chat_id=video_data['message'].chat.id, message_id=button_message_id,
-                    reply_markup=None # لإزالة الأزرار
-                )
-                app.edit_message_text(
-                    chat_id=video_data['message'].chat.id, message_id=button_message_id,
-                    text="✅ تم اختيار جودة متوسطة تلقائيًا. جاري الضغط..."
-                )
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تم اختيار جودة متوسطة تلقائيًا", callback_data="none")]]))
             except Exception: pass
             compression_executor.submit(process_video_for_compression, video_data)
 
@@ -311,9 +297,8 @@ def handle_incoming_video(client, message):
         'quality': None,
         'processing_started': False,
         'user_id': message.from_user.id,
-        'auto_compress_status_message_id': None # لتخزين ID رسالة الحالة
-    }
-    
+        'auto_compress_status_message_id': None # <--- هذا هو الإضافة الجديدة
+    }    
     threading.Thread(target=post_download_actions, args=[message.id], name=f"PostDownloadThread-{message.id}").start()
 
 def post_download_actions(original_message_id):
@@ -333,10 +318,11 @@ def post_download_actions(original_message_id):
         user_prefs = get_user_settings(user_id)
         if user_prefs['auto_compress']:
             video_data['quality'] = user_prefs['auto_quality_value']
-            # هنا نقوم بتخزين ID الرسالة التي سنرسلها
+            # هنا نقوم بتخزين ID الرسالة التي سنرسلها <--- التعديل هنا
             status_msg = message.reply_text(f"✅ تم التنزيل. جاري الضغط تلقائيًا بالجودة المحددة: **CRF {video_data['quality']}**", quote=True)
-            video_data['auto_compress_status_message_id'] = status_msg.id
+            video_data['auto_compress_status_message_id'] = status_msg.id # <--- هذا هو التعديل
             compression_executor.submit(process_video_for_compression, video_data)
+            
         else:
             markup = InlineKeyboardMarkup([
                 [InlineKeyboardButton("ضعيفة (CRF 27)", callback_data="crf_27"),
@@ -344,11 +330,10 @@ def post_download_actions(original_message_id):
                  InlineKeyboardButton("عالية (CRF 18)", callback_data="crf_18")],
                 [InlineKeyboardButton("❌ إلغاء العملية", callback_data="cancel_compression")]
             ])
-            reply_message = message.reply_text("✅ تم تنزيل الفيديو.\nاختر جودة الضغط، أو سيتم اختيار جودة متوسطة بعد **300 ثانية**:", reply_markup=markup, quote=True)
+            reply_message = message.reply_text("✅ تم تنزيل الفيديو.\nاختر جودة الضغط، أو سيتم اختيار جودة متوسطة بعد **30 ثانية**:", reply_markup=markup, quote=True)
             video_data['button_message_id'] = reply_message.id
-            # تحديث المفتاح في user_video_data ليتوافق مع button_message_id
-            user_video_data[reply_message.id] = user_video_data.pop(original_message_id) 
-            timer = threading.Timer(300, auto_select_medium_quality, args=[reply_message.id])
+            user_video_data[reply_message.id] = user_video_data.pop(original_message_id)
+            timer = threading.Timer(30, auto_select_medium_quality, args=[reply_message.id])
             user_video_data[reply_message.id]['timer'] = timer
             timer.start()
     except Exception as e:
