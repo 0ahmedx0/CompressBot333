@@ -75,6 +75,9 @@ def process_video_for_compression(video_data):
     encoder = user_prefs['encoder']
     print(f"[{thread_name}] Using encoder '{encoder}' for user {user_id} with quality '{quality}'.")
 
+    # تحديد رسالة "جاري الضغط تلقائيًا" لحذفها لاحقًا
+    auto_compress_status_message_id = video_data.get('auto_compress_status_message_id')
+
     if button_message_id and button_message_id in user_video_data:
         user_video_data[button_message_id]['processing_started'] = True
         try:
@@ -86,9 +89,9 @@ def process_video_for_compression(video_data):
             )
         except Exception as e:
             print(f"[{thread_name}] Error updating message reply markup to 'processing started': {e}")
-    elif not user_prefs['auto_compress']:
-        print(f"[{thread_name}] Video data for {button_message_id} not found when starting compression. Skipping.")
-        return
+    # elif not user_prefs['auto_compress']: # هذا الشرط خاطئ هنا، يمكن أن يؤدي إلى تخطي العملية بالكامل
+    #    print(f"[{thread_name}] Video data for {button_message_id} not found when starting compression. Skipping.")
+    #    return # هذا الجزء يجب إزالته
 
     temp_compressed_filename = None
 
@@ -174,17 +177,19 @@ def process_video_for_compression(video_data):
         if temp_compressed_filename and os.path.exists(temp_compressed_filename):
             os.remove(temp_compressed_filename)
         
-        # حذف رسالة "تم التنزيل. جاري الضغط تلقائيًا..." <--- التعديل هنا
+        # حذف رسالة "تم التنزيل. جاري الضغط تلقائيًا..."
         auto_compress_status_message_id = video_data.get('auto_compress_status_message_id')
         if auto_compress_status_message_id:
             try:
                 app.delete_messages(chat_id=message.chat.id, message_ids=auto_compress_status_message_id)
                 print(f"[{thread_name}] Deleted auto-compress status message {auto_compress_status_message_id}.")
+            except MessageEmpty: # نضيف هذا لتجنب الخطأ إذا حذفت الرسالة من قبل المستخدم
+                print(f"[{thread_name}] Auto-compress status message {auto_compress_status_message_id} was already deleted.")
             except Exception as e:
                 print(f"[{thread_name}] Error deleting auto-compress status message {auto_compress_status_message_id}: {e}")
 
-        # ... باقي الكود ...    
-            if button_message_id and button_message_id in user_video_data:
+        # باقي الكود يجب أن يكون متقدماً بمستوى واحد داخل `finally`
+        if button_message_id and button_message_id in user_video_data:
             user_video_data[button_message_id]['processing_started'] = False
             user_video_data[button_message_id]['quality'] = None
             try:
@@ -194,16 +199,26 @@ def process_video_for_compression(video_data):
                      InlineKeyboardButton("عالية (CRF 18)", callback_data="crf_18")],
                     [InlineKeyboardButton("❌ إنهاء العملية", callback_data="finish_process")]
                 ])
+                # يجب أن نتحقق من وجود الرسالة قبل التعديل، فقد تكون حذفت بالخطأ
                 app.edit_message_text(
                     chat_id=message.chat.id, message_id=button_message_id,
                     text="🎞️ تم الانتهاء من ضغط الفيديو. يمكنك اختيار جودة أخرى، أو إنهاء العملية:",
                     reply_markup=markup)
+            except MessageEmpty: # إذا كانت الرسالة قد حذفت بالفعل
+                print(f"[{thread_name}] Message {button_message_id} was already deleted, skipping edit.")
             except Exception as e:
                 print(f"[{thread_name}] Error re-displaying quality options: {e}")
-        else:
+        else: # هذه الحالة تحدث عادة للضغط التلقائي
             if os.path.exists(file_path): os.remove(file_path)
-            if message.id in user_video_data: del user_video_data[message.id]
-
+            # هذه هي النقطة التي تحتاج إلى ضبط منطق الحذف فيها
+            # إذا لم يكن هناك button_message_id (كما في حالة الضغط التلقائي)، نستخدم original_message_id
+            # ويجب التأكد أن المفتاح لا يزال موجوداً في القاموس قبل حذفه
+            if button_message_id and button_message_id in user_video_data:
+                del user_video_data[button_message_id]
+            # في حالة الضغط التلقائي، قد لا يكون هناك button_message_id. نعتمد على original_message_id.
+            elif video_data['message'].id in user_video_data: # نستخدم المفتاح الأصلي للفيديو هنا
+                del user_video_data[video_data['message'].id]
+                
 def auto_select_medium_quality(button_message_id):
     thread_name = threading.current_thread().name
     print(f"\n[{thread_name}] Auto-select triggered for Button ID: {button_message_id}.")
