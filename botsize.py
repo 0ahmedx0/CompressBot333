@@ -106,25 +106,30 @@ def process_video_for_compression(video_data):
             f'-ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -map_metadata -1'
         )
         
-        quality_value, preset = 0, "medium"
+        # ===== هذا هو التعديل المنطقي المطلوب (منطق موحد) =====
+        quality_value = 0
         
-        # ===== هذا هو التعديل المنطقي المطلوب =====
+        # الخطوة 1: الحصول على القيمة الرقمية للجودة
         if isinstance(quality, str) and 'crf_' in quality:
             quality_value = int(quality.split('_')[1])
-            if quality_value == 18:
-                preset = "slow"
-            elif quality_value == 23:
-                preset = "medium"
-            elif quality_value == 27:
-                preset = "veryfast" if encoder == 'libx264' else "fast"
-        # =========================================
         elif isinstance(quality, int):
             quality_value = quality
-            preset = "veryfast"
         else:
             message.reply_text("حدث خطأ داخلي: جودة ضغط غير صالحة.", quote=True)
             return
 
+        # الخطوة 2: تحديد الإعداد المسبق بناءً على القيمة الرقمية ونوع المرمز
+        preset = "fast" # قيمة افتراضية آمنة تعمل على الجميع
+        
+        if quality_value <= 18:
+            preset = "slow"
+        elif quality_value <= 23:
+            preset = "medium"
+        elif quality_value >= 27:
+            preset = "veryfast" if encoder == 'libx264' else "fast"
+        # القيم بين 24-26 ستستخدم الإعداد الافتراضي "fast"
+        # ========================================================
+        
         quality_param = "cq" if "nvenc" in encoder else "crf"
         quality_settings = f'-{quality_param} {quality_value} -preset {preset}'
         ffmpeg_command = f'{common_ffmpeg_part} {quality_settings} "{temp_compressed_filename}"'
