@@ -202,6 +202,32 @@ def start_command(client, message):
 def settings_command(client, message):
     send_settings_menu(client, message.chat.id, message.from_user.id)
 
+# ===== هذا هو المعالج الذي تم تبسيط الفلتر الخاص به =====
+@app.on_message(filters.text)
+def handle_custom_quality_input(client, message):
+    user_id = message.from_user.id
+    if user_id in user_states and user_states[user_id].get("state") == "waiting_for_cq_value":
+        prompt_message_id = user_states[user_id].get("prompt_message_id")
+        
+        try:
+            value = int(message.text)
+            if 0 <= value <= 51:
+                settings = get_user_settings(user_id)
+                settings['auto_quality_value'] = value
+                
+                del user_states[user_id]
+                
+                message.reply_text(f"✅ تم تحديث قيمة الجودة إلى: **{value}**", quote=True)
+                send_settings_menu(client, message.chat.id, user_id, prompt_message_id)
+                
+            else:
+                message.reply_text("❌ قيمة غير صالحة. الرجاء إدخال رقم بين 0 و 51.", quote=True)
+        except ValueError:
+            message.reply_text("❌ إدخال غير صالح. الرجاء إرسال رقم صحيح فقط.", quote=True)
+        finally:
+            try: message.delete()
+            except Exception: pass
+            
 def send_settings_menu(client, chat_id, user_id, message_id=None):
     settings = get_user_settings(user_id)
     encoder_text = {"hevc_nvenc": "H.265 (HEVC)","h264_nvenc": "H.264 (NVENC)","libx264": "H.264 (CPU)"}.get(settings['encoder'], "-")
@@ -227,32 +253,6 @@ def send_settings_menu(client, chat_id, user_id, message_id=None):
         except Exception: pass
     else:
         client.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-# ===== هذا هو السطر الذي تم تصحيحه =====
-@app.on_message(filters.text & ~filters.command())
-def handle_custom_quality_input(client, message):
-    user_id = message.from_user.id
-    if user_id in user_states and user_states[user_id].get("state") == "waiting_for_cq_value":
-        prompt_message_id = user_states[user_id].get("prompt_message_id")
-        
-        try:
-            value = int(message.text)
-            if 0 <= value <= 51:
-                settings = get_user_settings(user_id)
-                settings['auto_quality_value'] = value
-                
-                del user_states[user_id]
-                
-                message.reply_text(f"✅ تم تحديث قيمة الجودة إلى: **{value}**", quote=True)
-                send_settings_menu(client, message.chat.id, user_id, prompt_message_id)
-                
-            else:
-                message.reply_text("❌ قيمة غير صالحة. الرجاء إدخال رقم بين 0 و 51.", quote=True)
-        except ValueError:
-            message.reply_text("❌ إدخال غير صالح. الرجاء إرسال رقم صحيح فقط.", quote=True)
-        finally:
-            try: message.delete()
-            except Exception: pass
 
 @app.on_message(filters.video | filters.animation)
 def handle_incoming_video(client, message):
@@ -310,7 +310,7 @@ def post_download_actions(original_message_id):
             )
             video_data['button_message_id'] = reply_message.id
             user_video_data[reply_message.id] = user_video_data.pop(original_message_id)
-            timer = threading.Timer(300, auto_select_medium_quality, args=[reply_message.id])
+            timer = threading.Timer(30, auto_select_medium_quality, args=[reply_message.id])
             user_video_data[reply_message.id]['timer'] = timer
             timer.start()
 
