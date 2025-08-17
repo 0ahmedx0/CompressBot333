@@ -399,11 +399,14 @@ def check_channel_on_start():
         try:
             chat = app.get_chat(CHANNEL_ID)
             print(f"✅ تم التعرف على القناة بنجاح: '{chat.title}' (ID: {CHANNEL_ID})")
+            if chat.type not in ["channel", "supergroup"]:
+                print("⚠️ ملاحظة: ID القناة المحدد ليس لقناة أو مجموعة خارقة.")
+            elif not chat.permissions.can_post_messages:
+                 print(f"⚠️ ملاحظة: البوت ليس لديه صلاحية نشر الرسائل في القناة '{chat.title}'.")
         except Exception as e:
-            print(f"❌ خطأ في التعرف على القناة '{CHANNEL_ID}': {e}.")
+            print(f"❌ خطأ في التعرف على القناة '{CHANNEL_ID}': {e}. يرجى التأكد من أن البوت مشرف في القناة وأن ID صحيح.")
     else:
-        print("⚠️ لم يتم تحديد CHANNEL_ID في ملف config.py.")
-
+        print("⚠️ لم يتم تحديد CHANNEL_ID في ملف config.py. لن يتم رفع الفيديوهات إلى قناة.")
 threading.Thread(target=check_channel_on_start, daemon=True, name="ChannelCheckThread").start()
 
 print("🚀 البوت بدأ العمل! بانتظار الفيديوهات...")
