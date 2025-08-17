@@ -170,20 +170,21 @@ def process_video_for_compression(video_data):
     except Exception as e:
         print(f"[{thread_name}] General error during video processing for '{os.path.basename(file_path)}': {e}")
         message.reply_text(f"حدث خطأ غير متوقع أثناء معالجة الفيديو: `{e}`", quote=True)
-     finally:
-         if temp_compressed_filename and os.path.exists(temp_compressed_filename):
-             os.remove(temp_compressed_filename)
-         
-         # حذف رسالة "تم التنزيل. جاري الضغط تلقائيًا..." <--- التعديل هنا
-         auto_compress_status_message_id = video_data.get('auto_compress_status_message_id')
-         if auto_compress_status_message_id:
-             try:
-                 app.delete_messages(chat_id=message.chat.id, message_ids=auto_compress_status_message_id)
-                 print(f"[{thread_name}] Deleted auto-compress status message {auto_compress_status_message_id}.")
-             except Exception as e:
-                 print(f"[{thread_name}] Error deleting auto-compress status message {auto_compress_status_message_id}: {e}")
-    
-        if button_message_id and button_message_id in user_video_data:
+    finally:
+        if temp_compressed_filename and os.path.exists(temp_compressed_filename):
+            os.remove(temp_compressed_filename)
+        
+        # حذف رسالة "تم التنزيل. جاري الضغط تلقائيًا..." <--- التعديل هنا
+        auto_compress_status_message_id = video_data.get('auto_compress_status_message_id')
+        if auto_compress_status_message_id:
+            try:
+                app.delete_messages(chat_id=message.chat.id, message_ids=auto_compress_status_message_id)
+                print(f"[{thread_name}] Deleted auto-compress status message {auto_compress_status_message_id}.")
+            except Exception as e:
+                print(f"[{thread_name}] Error deleting auto-compress status message {auto_compress_status_message_id}: {e}")
+
+        # ... باقي الكود ...    
+            if button_message_id and button_message_id in user_video_data:
             user_video_data[button_message_id]['processing_started'] = False
             user_video_data[button_message_id]['quality'] = None
             try:
