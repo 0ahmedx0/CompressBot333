@@ -99,24 +99,24 @@ def process_video_for_compression(video_data):
 
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir=DOWNLOADS_DIR) as temp_file:
             temp_compressed_filename = temp_file.name
-
+        
+        # ===== هذا هو التعديل المطلوب =====
         common_ffmpeg_part = (
             f'ffmpeg -y -i "{file_path}" -c:v {encoder} -pix_fmt {VIDEO_PIXEL_FORMAT} '
             f'-c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} '
-            f'-ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -profile:v high -map_metadata -1'
+            f'-ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -map_metadata -1'
         )
+        # ================================
+        
         quality_value, preset = 0, "medium"
         
         if isinstance(quality, str) and 'crf_' in quality:
             quality_value = int(quality.split('_')[1])
             if quality_value == 27: preset = "fast" if "nvenc" in encoder else "veryfast"
             elif quality_value == 18: preset = "slow"
-        
-        # ===== هذا هو التعديل المطلوب =====
         elif isinstance(quality, int):
             quality_value = quality
-            preset = "fast"  # ضبط الإعداد المسبق على "fast" للقيمة المخصصة
-        # ================================
+            preset = "fast"
 
         else:
             message.reply_text("حدث خطأ داخلي: جودة ضغط غير صالحة.", quote=True)
@@ -304,7 +304,7 @@ def post_download_actions(original_message_id):
                  InlineKeyboardButton("عالية (CRF 18)", callback_data="crf_18")],
                 [InlineKeyboardButton("❌ إلغاء العملية", callback_data="cancel_compression")]
             ])
-            reply_message = message.reply_text("✅ تم تنزيل الفيديو.\nاختر جودة الضغط، أو سيتم اختيار جودة متوسطة بعد **30 ثانية**:", reply_markup=markup, quote=True)
+            reply_message = message.reply_text("✅ تم تنزيل الفيديو.\nاختر جودة الضغط، أو سيتم اختيار جودة متوسطة بعد **300 ثانية**:", reply_markup=markup, quote=True)
             video_data['button_message_id'] = reply_message.id
             user_video_data[reply_message.id] = user_video_data.pop(original_message_id)
             timer = threading.Timer(300, auto_select_medium_quality, args=[reply_message.id])
