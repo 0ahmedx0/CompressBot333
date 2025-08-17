@@ -18,23 +18,20 @@ if not os.path.exists(DOWNLOADS_DIR):
 download_executor = ThreadPoolExecutor(max_workers=5)
 compression_executor = ThreadPoolExecutor(max_workers=3)
 
-# --- [إضافة جديدة] --- قاموس لتخزين "الحالة" الحالية للمستخدم
-# يُستخدم لمعرفة ما إذا كان البوت ينتظر إدخالاً محدداً من المستخدم
-# user_states = { user_id: "waiting_for_cq_value" }
+# قاموس لتخزين "الحالة" الحالية للمستخدم
 user_states = {}
 
 user_settings = {}
 DEFAULT_SETTINGS = {
     'encoder': 'h264_nvenc',
     'auto_compress': False,
-    'auto_quality_value': 25  # --- [تعديل] --- تم تغييرها إلى قيمة رقمية
+    'auto_quality_value': 25
 }
 
 def get_user_settings(user_id):
     if user_id not in user_settings:
         user_settings[user_id] = DEFAULT_SETTINGS.copy()
     return user_settings[user_id]
-# -----------------------------------------------------------
 
 def progress(current, total, message_type="Generic"):
     thread_name = threading.current_thread().name
@@ -65,7 +62,7 @@ def process_video_for_compression(video_data):
     file_path = video_data['file']
     message = video_data['message']
     button_message_id = video_data.get('button_message_id')
-    quality = video_data['quality'] # قد تكون "crf_23" أو رقمًا مثل 25
+    quality = video_data['quality']
     user_id = video_data['user_id']
     user_prefs = get_user_settings(user_id)
     encoder = user_prefs['encoder']
@@ -74,7 +71,6 @@ def process_video_for_compression(video_data):
     if button_message_id and button_message_id in user_video_data:
         user_video_data[button_message_id]['processing_started'] = True
         try:
-            # --- [تعديل] --- عرض القيمة الرقمية الصحيحة في الرسالة ---
             quality_display_value = quality if isinstance(quality, int) else quality.split('_')[1]
             app.edit_message_reply_markup(
                 chat_id=message.chat.id,
@@ -97,7 +93,6 @@ def process_video_for_compression(video_data):
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir=DOWNLOADS_DIR) as temp_file:
             temp_compressed_filename = temp_file.name
 
-        # --- [تعديل جذري] --- بناء أمر FFmpeg بمرونة أكبر ---
         common_ffmpeg_part = (
             f'ffmpeg -y -i "{file_path}" -c:v {encoder} -pix_fmt {VIDEO_PIXEL_FORMAT} '
             f'-c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} '
@@ -105,7 +100,7 @@ def process_video_for_compression(video_data):
         )
 
         quality_value = 0
-        preset = "medium"  # قيمة افتراضية للإعداد المسبق
+        preset = "medium"
         
         if isinstance(quality, str) and 'crf_' in quality:
             quality_value = int(quality.split('_')[1])
@@ -119,11 +114,8 @@ def process_video_for_compression(video_data):
 
         quality_param = "cq" if "nvenc" in encoder else "crf"
         quality_settings = f'-{quality_param} {quality_value} -preset {preset}'
-        
         ffmpeg_command = f'{common_ffmpeg_part} {quality_settings} "{temp_compressed_filename}"'
         
-        # --- نهاية التعديل ---
-
         print(f"[{thread_name}][FFmpeg] Executing command:\n{ffmpeg_command}")
         process = subprocess.run(ffmpeg_command, shell=True, check=True, capture_output=True, text=True, encoding='utf-8')
         
@@ -226,7 +218,6 @@ def send_settings_menu(client, chat_id, user_id, message_id=None):
     keyboard = [
         [InlineKeyboardButton("🔄 تغيير الترميز", callback_data="settings_encoder")],
         [InlineKeyboardButton(f"الضغط التلقائي: {auto_compress_text}", callback_data="settings_toggle_auto")],
-        # --- [تعديل] --- زر جديد لإدخال القيمة يدويًا ---
         [InlineKeyboardButton("✏️ تحديد قيمة الجودة يدويًا", callback_data="settings_custom_quality")],
         [InlineKeyboardButton("✖️ إغلاق", callback_data="close_settings")]
     ]
@@ -237,26 +228,22 @@ def send_settings_menu(client, chat_id, user_id, message_id=None):
     else:
         client.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-# --- [إضافة جديدة] --- معالج لإدخال قيمة الجودة من المستخدم
-@app.on_message(filters.text & ~filters.command)
+# ===== هذا هو السطر الذي تم تصحيحه =====
+@app.on_message(filters.text & ~filters.command())
 def handle_custom_quality_input(client, message):
     user_id = message.from_user.id
-    # التحقق مما إذا كان البوت ينتظر إدخالاً من هذا المستخدم
     if user_id in user_states and user_states[user_id].get("state") == "waiting_for_cq_value":
         prompt_message_id = user_states[user_id].get("prompt_message_id")
         
         try:
             value = int(message.text)
-            # التحقق من أن القيمة ضمن نطاق معقول (0-51 هو النطاق الكامل لـ h264)
             if 0 <= value <= 51:
                 settings = get_user_settings(user_id)
                 settings['auto_quality_value'] = value
                 
-                # حذف حالة الانتظار
                 del user_states[user_id]
                 
                 message.reply_text(f"✅ تم تحديث قيمة الجودة إلى: **{value}**", quote=True)
-                # الرجوع إلى قائمة الإعدادات الرئيسية
                 send_settings_menu(client, message.chat.id, user_id, prompt_message_id)
                 
             else:
@@ -264,7 +251,6 @@ def handle_custom_quality_input(client, message):
         except ValueError:
             message.reply_text("❌ إدخال غير صالح. الرجاء إرسال رقم صحيح فقط.", quote=True)
         finally:
-            # حذف رسالة المستخدم التي تحتوي على الرقم لتنظيف المحادثة
             try: message.delete()
             except Exception: pass
 
@@ -305,7 +291,6 @@ def post_download_actions(original_message_id):
         
         user_prefs = get_user_settings(user_id)
         if user_prefs['auto_compress']:
-            # --- [تعديل] --- استخدام القيمة الرقمية المخصصة مباشرة
             video_data['quality'] = user_prefs['auto_quality_value']
             message.reply_text(
                 f"✅ تم التنزيل. جاري الضغط تلقائيًا بالجودة المحددة: **CRF {video_data['quality']}**", 
@@ -349,11 +334,8 @@ def universal_callback_handler(client, callback_query):
                         [InlineKeyboardButton("H.264 (CPU)", callback_data="set_encoder:libx264")],
                         [InlineKeyboardButton("« رجوع", callback_data="settings")]]
             message.edit_text("اختر ترميز الفيديو المفضل:", reply_markup=InlineKeyboardMarkup(keyboard))
-        # --- [إضافة جديدة] --- منطق زر تحديد القيمة المخصصة
         elif data == "settings_custom_quality":
-            # تعيين حالة المستخدم إلى "waiting_for_cq_value"
             user_states[user_id] = {"state": "waiting_for_cq_value", "prompt_message_id": message.id}
-            # إرسال طلب للمستخدم لإدخال القيمة
             cancel_button = InlineKeyboardMarkup([[InlineKeyboardButton("إلغاء", callback_data="cancel_input")]])
             message.edit_text(
                 "أرسل الآن قيمة الجودة التي تريدها (رقم بين 0 و 51).\n\n"
@@ -375,7 +357,6 @@ def universal_callback_handler(client, callback_query):
         callback_query.answer(f"تم تغيير الترميز إلى {value}")
         send_settings_menu(client, message.chat.id, user_id, message.id)
         return
-    # --- [إضافة جديدة] --- منطق زر إلغاء الإدخال
     elif data == "cancel_input":
         if user_id in user_states:
             del user_states[user_id]
