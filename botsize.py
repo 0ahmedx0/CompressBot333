@@ -111,8 +111,13 @@ def process_video_for_compression(video_data):
             quality_value = int(quality.split('_')[1])
             if quality_value == 27: preset = "fast" if "nvenc" in encoder else "veryfast"
             elif quality_value == 18: preset = "slow"
+        
+        # ===== هذا هو التعديل المطلوب =====
         elif isinstance(quality, int):
             quality_value = quality
+            preset = "fast"  # ضبط الإعداد المسبق على "fast" للقيمة المخصصة
+        # ================================
+
         else:
             message.reply_text("حدث خطأ داخلي: جودة ضغط غير صالحة.", quote=True)
             return
@@ -163,7 +168,6 @@ def process_video_for_compression(video_data):
         if temp_compressed_filename and os.path.exists(temp_compressed_filename):
             os.remove(temp_compressed_filename)
         
-        # **[تمت الإعادة]** إعادة المنطق الأصلي للسماح بإعادة الضغط
         if button_message_id and button_message_id in user_video_data:
             user_video_data[button_message_id]['processing_started'] = False
             user_video_data[button_message_id]['quality'] = None
@@ -303,7 +307,7 @@ def post_download_actions(original_message_id):
             reply_message = message.reply_text("✅ تم تنزيل الفيديو.\nاختر جودة الضغط، أو سيتم اختيار جودة متوسطة بعد **30 ثانية**:", reply_markup=markup, quote=True)
             video_data['button_message_id'] = reply_message.id
             user_video_data[reply_message.id] = user_video_data.pop(original_message_id)
-            timer = threading.Timer(30, auto_select_medium_quality, args=[reply_message.id])
+            timer = threading.Timer(300, auto_select_medium_quality, args=[reply_message.id])
             user_video_data[reply_message.id]['timer'] = timer
             timer.start()
     except Exception as e:
@@ -391,7 +395,6 @@ def universal_callback_handler(client, callback_query):
     compression_executor.submit(process_video_for_compression, video_data)
 
 # -------------------------- وظائف التشغيل والإدارة --------------------------
-# **[تمت الإعادة]** إعادة وظيفة وخيط التحقق من القناة
 cleanup_downloads()
 def check_channel_on_start():
     time.sleep(5)
