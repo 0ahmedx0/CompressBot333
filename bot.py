@@ -134,7 +134,7 @@ def process_video_for_compression(video_data):
         
         # إضافة إعدادات الجودة بناءً على الترميز
         if quality == "crf_27":
-            quality_settings = "-cq 27 -preset fast" if "nvenc" in encoder else "-crf 27 -preset veryfast"
+            quality_settings = "-cq 37 -preset fast" if "nvenc" in encoder else "-crf 27 -preset veryfast"
         elif quality == "crf_23":
             quality_settings = "-cq 23 -preset medium" if "nvenc" in encoder else "-crf 23 -preset medium"
         elif quality == "crf_18":
