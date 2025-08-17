@@ -26,7 +26,7 @@ user_settings = {}
 DEFAULT_SETTINGS = {
     'encoder': 'h264_nvenc',
     'auto_compress': False,
-    'auto_quality_value': 25
+    'auto_quality_value': 30
 }
 
 def get_user_settings(user_id):
