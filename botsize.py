@@ -100,24 +100,27 @@ def process_video_for_compression(video_data):
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir=DOWNLOADS_DIR) as temp_file:
             temp_compressed_filename = temp_file.name
         
-        # ===== هذا هو التعديل المطلوب =====
         common_ffmpeg_part = (
             f'ffmpeg -y -i "{file_path}" -c:v {encoder} -pix_fmt {VIDEO_PIXEL_FORMAT} '
             f'-c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} '
             f'-ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -map_metadata -1'
         )
-        # ================================
         
         quality_value, preset = 0, "medium"
         
+        # ===== هذا هو التعديل المنطقي المطلوب =====
         if isinstance(quality, str) and 'crf_' in quality:
             quality_value = int(quality.split('_')[1])
-            if quality_value == 27: preset = "veryfast" if "nvenc" in encoder else "veryfast"
-            elif quality_value == 18: preset = "slow"
+            if quality_value == 18:
+                preset = "slow"
+            elif quality_value == 23:
+                preset = "medium"
+            elif quality_value == 27:
+                preset = "veryfast" if encoder == 'libx264' else "fast"
+        # =========================================
         elif isinstance(quality, int):
             quality_value = quality
             preset = "veryfast"
-
         else:
             message.reply_text("حدث خطأ داخلي: جودة ضغط غير صالحة.", quote=True)
             return
