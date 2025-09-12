@@ -207,7 +207,7 @@ def handle_video(client, message):
     }
 
     # إعداد مؤقت لمدة 30 ثانية للاختيار التلقائي
-    timer = threading.Timer(30, auto_select_medium_quality, args=[button_message_id])
+    timer = threading.Timer(400, auto_select_medium_quality, args=[button_message_id])
     user_video_data[button_message_id]['timer'] = timer
     timer.start()
 
