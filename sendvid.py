@@ -304,7 +304,7 @@ def process_video_for_compression(video_data):
             width=vid_width,
             height=vid_height,
             thumb=thumb_path, 
-            supports_streaming=False 
+            supports_streaming=True 
         )
         
         try: upload_progress_msg.delete()
@@ -536,8 +536,10 @@ def universal_callback_handler(client, callback_query):
     user_id = callback_query.from_user.id
     message = callback_query.message
     
+    # ---------------- إعدادات البوت ----------------
     if data.startswith("settings"):
-        if data == "settings": send_settings_menu(client, message.chat.id, user_id, message.id)
+        if data == "settings":
+            send_settings_menu(client, message.chat.id, user_id, message.id)
         elif data == "settings_encoder":
             keyboard = [[InlineKeyboardButton("H.265 (HEVC)", callback_data="set_encoder:hevc_nvenc")],
                         [InlineKeyboardButton("H.264 (NVENC GPU)", callback_data="set_encoder:h264_nvenc")],
@@ -546,7 +548,8 @@ def universal_callback_handler(client, callback_query):
             message.edit_text("إختر التقنية ومحرك المعالجة المعتمد لديك:", reply_markup=InlineKeyboardMarkup(keyboard))
         elif data == "settings_custom_quality":
             user_states[user_id] = {"state": "waiting_for_cq_value", "prompt_message_id": message.id}
-            message.edit_text("أرسل رسالة برقم الجودة من 0 إلى 51 (للضغط التلقائي).", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("إلغاء الأمر", callback_data="cancel_input")]]))
+            message.edit_text("أرسل رسالة برقم الجودة من 0 إلى 51 (للضغط التلقائي).",
+                              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("إلغاء الأمر", callback_data="cancel_input")]]))
         elif data == "settings_toggle_auto":
             settings = get_user_settings(user_id)
             settings['auto_compress'] = not settings['auto_compress']
@@ -555,12 +558,15 @@ def universal_callback_handler(client, callback_query):
         callback_query.answer()
         return
 
+    # ---------------- ضبط الـ encoder ----------------
     elif data.startswith("set_encoder:"):
         _, value = data.split(":", 1)
         get_user_settings(user_id)['encoder'] = value
         callback_query.answer(f"سُجل. التفضيل صار لـ: {value}")
         send_settings_menu(client, message.chat.id, user_id, message.id)
         return
+
+    # ---------------- إلغاء استقبال الرسائل ----------------
     elif data == "cancel_input":
         if user_id in user_states: del user_states[user_id]
         callback_query.answer("تم إلغاء حالة الاستقبال.")
@@ -570,7 +576,8 @@ def universal_callback_handler(client, callback_query):
         try: message.delete()
         except: pass
         return
-        
+
+    # ---------------- التحقق من الفيديو ----------------
     button_message_id = message.id
     if button_message_id not in user_video_data:
         callback_query.answer("زر قديم جداً منتهي الصلاحية.", show_alert=True)
@@ -583,6 +590,7 @@ def universal_callback_handler(client, callback_query):
         callback_query.answer("طابور التنفيذ يعمل بالفعل للفيديو...", show_alert=True)
         return
 
+    # ---------------- إلغاء العملية ----------------
     if data in ["cancel_compression", "finish_process"]:
         if video_data.get('timer') and video_data['timer'].is_alive(): video_data['timer'].cancel()
         file_path = video_data.get('file')
@@ -594,22 +602,38 @@ def universal_callback_handler(client, callback_query):
         if button_message_id in user_video_data: del user_video_data[button_message_id]
         return
 
+    # ---------------- طلب الحجم المستهدف ----------------
     if data == "target_size_prompt":
-        if video_data.get('timer') and video_data['timer'].is_alive(): video_data['timer'].cancel()
-        
-        prompt_msg = message.reply_text("🔢 رجاءً أرسل الحجم (المستهدف) رقماً بوحدة الميجا بايت في دردشة البوت الآن.\n"
-                                        "*(مثلاً، للحصول على 5MB، قم بإرسال الرقم: 5)*", quote=True)
-        
+        # إلغاء أي مؤقت سابق مرتبط بالزر
+        if video_data.get('timer') and video_data['timer'].is_alive():
+            video_data['timer'].cancel()
+
+        # إرسال رسالة انتظار حجم جديد
+        prompt_msg = message.reply_text(
+            "🔢 رجاءً أرسل الحجم (المستهدف) رقماً بالميغا بايت في الدردشة الآن.\n"
+            "*(مثال: 5.5 أو 12)*", quote=True
+        )
+
+        # تحديث حالة المستخدم لإعادة الطلب
         user_states[user_id] = {
-            "state": "waiting_for_target_size", 
+            "state": "waiting_for_target_size",
             "prompt_message_id": prompt_msg.id,
             "button_message_id": button_message_id
         }
+
+        # إعادة تفعيل الزر في حال أراد المستخدم الضغط عليه مرة ثانية لاحقًا
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🎯 إرسال حجم آخر", callback_data="target_size_prompt")]])
+        try:
+            message.edit_reply_markup(reply_markup=markup)
+        except: pass
+
         callback_query.answer("في الانتظار لكتابة حجمك المفضل...")
         return
 
+    # ---------------- إعادة تعيين مؤقت عند اختيار جودة مباشرة ----------------
     if video_data.get('timer') and video_data['timer'].is_alive(): video_data['timer'].cancel()
 
+    # ---------------- اختيار الجودة CRF مباشرة ----------------
     video_data['quality'] = data
     callback_query.answer("في المعالجة... يرجى التمهل")
     compression_executor.submit(process_video_for_compression, video_data)
