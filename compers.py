@@ -26,13 +26,13 @@ user_settings = {}
 user_video_data = {}
 PROGRESS_TRACKER = {} # لتتبع وقت آخر تحديث لرسائل التقدم (تجنب الحظر FloodWait)
 
-# الإعدادات الافتراضية - تم إضافة خيار نمط التلقائي والنسبة التلقائية
+# تم تحديث الإعدادات الافتراضية لتشمل النسبة المئوية
 DEFAULT_SETTINGS = {
     'encoder': 'h264_nvenc',
     'auto_compress': False,
-    'auto_compress_type': 'crf', # 'crf' or 'percent'
     'auto_quality_value': 30,
-    'auto_percent_value': 50 # النسبة الافتراضية هي 50%
+    'auto_percent_value': 50,    # النسبة المئوية الافتراضية 50%
+    'auto_mode': 'crf'           # وضع التلقائي (crf أو percent)
 }
 
 def get_user_settings(user_id):
@@ -327,18 +327,17 @@ def process_video_for_compression(video_data):
             user_video_data[button_message_id]['processing_started'] = False
             user_video_data[button_message_id]['quality'] = None
             try:
-                # تحديث الأزرار لتشمل ميزة النسبة أيضاً عند الطلب اليدوي اللاحق
                 markup = InlineKeyboardMarkup([
                     [InlineKeyboardButton("ضعيفة (CRF 27)", callback_data="crf_27"),
                      InlineKeyboardButton("متوسطة (CRF 23)", callback_data="crf_23"),
                      InlineKeyboardButton("عالية (CRF 18)", callback_data="crf_18")],
                     [InlineKeyboardButton("🎯 حجم (MB)", callback_data="target_size_prompt"),
-                     InlineKeyboardButton("📉 نسبة (%)", callback_data="target_percent_prompt")],
+                     InlineKeyboardButton("📉 نسبة (100%)", callback_data="target_percent_prompt")], # تم إضافة الزر هنا
                     [InlineKeyboardButton("❌ إنهاء العملية", callback_data="finish_process")]
                 ])
                 app.edit_message_text(
                     chat_id=message.chat.id, message_id=button_message_id,
-                    text="✅ تمت المهمة بنجاح! يمكنك تجربة جودة أخرى أو حجم آخر، أو إنهاء العملية لحذف الملف الأصلي:",
+                    text="✅ تمت المهمة بنجاح! يمكنك تجربة خيار آخر أم إنهاء العملية من هنا:",
                     reply_markup=markup)
             except: pass
 
@@ -360,7 +359,7 @@ def auto_select_medium_quality(button_message_id):
 def start_command(client, message):
     settings_button = InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ الإعدادات", callback_data="settings")]])
     message.reply_text(
-        "👋 أهلاً بك! أرسل لي فيديو وسأقوم بضغطه.\n\nتتوفر ميزات: CRF، الحجم المحدد (MB)، والضغط بالنسبة المئوية (%) من الأصل.",
+        "👋 أهلاً بك! أرسل لي فيديو للبدء.\nيمكنك الضغط عبر الجودة، الحجم، أو النسبة المئوية.",
         reply_markup=settings_button, quote=True
     )
 
@@ -371,42 +370,40 @@ def settings_command(client, message):
 @app.on_message(filters.text)
 def handle_text_inputs(client, message):
     user_id = message.from_user.id
-    if user_id not in user_states:
-        return
-        
+    if user_id not in user_states: return
     state_data = user_states[user_id]
     state = state_data.get("state")
     
-    # ميزة ضغط حجم محدد يدوي
+    # التعامل مع إدخال حجم MB محدد
     if state == "waiting_for_target_size":
         button_message_id = state_data.get("button_message_id")
         try:
             size = float(message.text)
             if size <= 0: raise ValueError
             if button_message_id in user_video_data:
-                video_data = user_video_data[button_message_id]
-                video_data['quality'] = {"target_size": size}
-                compression_executor.submit(process_video_for_compression, video_data)
+                vd = user_video_data[button_message_id]
+                vd['quality'] = {"target_size": size}
+                compression_executor.submit(process_video_for_compression, vd)
                 del user_states[user_id]
         except: message.reply_text("❌ أرسل رقماً صحيحاً.")
 
-    # ميزة النسبة المئوية اليدوية (المطلوبة)
+    # التعامل مع إدخال نسبة مئوية محددة (%)
     elif state == "waiting_for_manual_percent":
         button_message_id = state_data.get("button_message_id")
         try:
             pct = float(message.text)
             if not (1 <= pct <= 100): raise ValueError
             if button_message_id in user_video_data:
-                video_data = user_video_data[button_message_id]
-                orig_size_mb = os.path.getsize(video_data['file']) / (1024*1024)
-                target_mb = (pct / 100) * orig_size_mb
-                video_data['quality'] = {"target_size": target_mb}
-                compression_executor.submit(process_video_for_compression, video_data)
+                vd = user_video_data[button_message_id]
+                original_mb = os.path.getsize(vd['file']) / (1024 * 1024)
+                target_mb = (pct / 100) * original_mb
+                vd['quality'] = {"target_size": target_mb}
+                compression_executor.submit(process_video_for_compression, vd)
                 del user_states[user_id]
-        except: message.reply_text("❌ أرسل رقم بين 1 و 100.")
+        except: message.reply_text("❌ أرسل رقماً بين 1 و 100.")
 
-    # ضبط قيمة النسبة للتلقائي
-    elif state == "waiting_for_auto_percent_value":
+    # ضبط النسبة للتلقائي
+    elif state == "waiting_for_auto_percent_val":
         try:
             val = float(message.text)
             if 1 <= val <= 100:
@@ -427,48 +424,37 @@ def handle_text_inputs(client, message):
 
 def send_settings_menu(client, chat_id, user_id, message_id=None):
     s = get_user_settings(user_id)
-    auto_comp = "✅ مفعل" if s['auto_compress'] else "❌ معطل"
-    mode_text = "نسبة مئوية %" if s['auto_compress_type'] == 'percent' else "جودة CRF"
+    auto_text = "✅ مفعل" if s['auto_compress'] else "❌ معطل"
+    mode_text = "نسبة مئوية %" if s['auto_mode'] == 'percent' else "جودة CRF"
     
     text = (
-        "**⚙️ قائمة الإعدادات:**\n\n"
+        "**⚙️ الإعدادات الحالية:**\n\n"
         f"🔹 الترميز: `{s['encoder']}`\n"
-        f"🔸 الضغط التلقائي: `{auto_comp}`\n"
+        f"🔸 الضغط التلقائي: `{auto_text}`\n"
         f"📊 وضع التلقائي: `{mode_text}`\n"
-        f"📈 النسبة التلقائية: `{s['auto_percent_value']}%` | جودة: `{s['auto_quality_value']}`"
+        f"📈 النسبة المحفوظة: `{s['auto_percent_value']}%`"
     )
     keyboard = [
-        [InlineKeyboardButton("🔄 تغيير المحرك", callback_data="settings_encoder")],
-        [InlineKeyboardButton(f"تغيير وضع التلقائي إلى: {'CRF' if s['auto_compress_type']=='percent' else 'نسبة %'}", callback_data="settings_toggle_mode")],
-        [InlineKeyboardButton("📉 ضبط (النسبة %) للتلقائي", callback_data="settings_set_auto_percent")],
-        [InlineKeyboardButton("✏️ ضبط (CRF) للتلقائي", callback_data="settings_custom_quality")],
-        [InlineKeyboardButton(f"الضغط التلقائي: {auto_comp}", callback_data="settings_toggle_auto")],
+        [InlineKeyboardButton("🔄 المحرك (H.264/H.265/CPU)", callback_data="settings_encoder")],
+        [InlineKeyboardButton(f"وضع التلقائي: {mode_text}", callback_data="toggle_auto_mode")],
+        [InlineKeyboardButton("📉 ضبط النسبة المئوية (%)", callback_data="set_auto_pct")],
+        [InlineKeyboardButton("✏️ ضبط الجودة (CRF)", callback_data="settings_custom_quality")],
+        [InlineKeyboardButton(f"الضغط التلقائي: {auto_text}", callback_data="settings_toggle_auto")],
         [InlineKeyboardButton("✖️ إغلاق", callback_data="close_settings")]
     ]
-
     if message_id:
         try: client.edit_message_text(chat_id, message_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
         except: pass
-    else:
-        client.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else: client.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 @app.on_message(filters.video | filters.animation)
 def handle_incoming_video(client, message):
     file_id = message.video.file_id if message.video else message.animation.file_id
     file_size = message.video.file_size if message.video else message.animation.file_size
     file_name_prefix = os.path.join(DOWNLOADS_DIR, f"{message.from_user.id}_{message.id}_{int(time.time())}.mp4")
+    download_msg = message.reply_text("📥 جاري التحميل...", quote=True)
+    download_future = download_executor.submit(client.download_media, message=file_id, file_name=file_name_prefix, progress=update_progress_msg, progress_args=(client, download_msg, "📥 **تنزيل الملف...**", time.time(), file_size))
     
-    download_msg = message.reply_text("📥 جاري تنزيل الملف...", quote=True)
-    start_time = time.time()
-    
-    download_future = download_executor.submit(
-        client.download_media,
-        message=file_id,
-        file_name=file_name_prefix,
-        progress=update_progress_msg,
-        progress_args=(client, download_msg, "📥 **جاري التنزيل...**", start_time, file_size)
-    )
-
     user_video_data[message.id] = {
         'message': message, 'download_msg': download_msg, 'download_future': download_future,
         'file': None, 'button_message_id': None, 'timer': None, 'quality': None,
@@ -477,41 +463,40 @@ def handle_incoming_video(client, message):
     threading.Thread(target=post_download_actions, args=[message.id]).start()
     
 def post_download_actions(original_message_id):
-    video_data = user_video_data[original_message_id]
-    message, user_id = video_data['message'], video_data['user_id']
+    if original_message_id not in user_video_data: return
+    vd = user_video_data[original_message_id]
     try:
-        file_path = video_data['download_future'].result()
-        video_data['file'] = file_path
-        try: video_data['download_msg'].delete()
+        file_path = vd['download_future'].result()
+        vd['file'] = file_path
+        try: vd['download_msg'].delete()
         except: pass
         
-        s = get_user_settings(user_id)
+        s = get_user_settings(vd['user_id'])
         if s['auto_compress']:
-            # إذا كان الضغط تلقائي بالنسبة المئوية
-            if s['auto_compress_type'] == 'percent':
-                orig_mb = os.path.getsize(file_path) / (1024*1024)
-                target_mb = (s['auto_percent_value'] / 100) * orig_mb
-                video_data['quality'] = {"target_size": target_mb}
+            if s['auto_mode'] == 'percent':
+                original_mb = os.path.getsize(file_path) / (1024 * 1024)
+                target_mb = (s['auto_percent_value'] / 100) * original_mb
+                vd['quality'] = {"target_size": target_mb}
             else:
-                video_data['quality'] = s['auto_quality_value']
+                vd['quality'] = s['auto_quality_value']
             
-            status_msg = message.reply_text("🚀 تم اكتشاف وضع التلقائي، جاري المعالجة...")
-            video_data['auto_compress_status_message_id'] = status_msg.id
-            compression_executor.submit(process_video_for_compression, video_data)
+            st_msg = vd['message'].reply_text("🚀 جاري الضغط التلقائي كما طلبت في الإعدادات...")
+            vd['auto_compress_status_message_id'] = st_msg.id
+            compression_executor.submit(process_video_for_compression, vd)
         else:
             markup = InlineKeyboardMarkup([
                 [InlineKeyboardButton("أدنى (27)", callback_data="crf_27"),
                  InlineKeyboardButton("متوسط (23)", callback_data="crf_23"),
-                 InlineKeyboardButton("عالي (18)", callback_data="crf_18")],
+                 InlineKeyboardButton("عالية (18)", callback_data="crf_18")],
                 [InlineKeyboardButton("🎯 حجم (MB)", callback_data="target_size_prompt"),
-                 InlineKeyboardButton("📉 نسبة (%) من الأصل", callback_data="target_percent_prompt")],
+                 InlineKeyboardButton("📉 نسبة (%)", callback_data="target_percent_prompt")],
                 [InlineKeyboardButton("❌ إلغاء", callback_data="cancel_compression")]
             ])
-            reply_message = message.reply_text("✅ استُلم الملف. اختر طريقة الضغط:", reply_markup=markup, quote=True)
-            video_data['button_message_id'] = reply_message.id
-            user_video_data[reply_message.id] = user_video_data.pop(original_message_id)
-            timer = threading.Timer(300, auto_select_medium_quality, args=[reply_message.id])
-            video_data['timer'] = timer
+            rep = vd['message'].reply_text("✅ استُلم الفيديو. اختر نمط الضغط:", reply_markup=markup, quote=True)
+            vd['button_message_id'] = rep.id
+            user_video_data[rep.id] = user_video_data.pop(original_message_id)
+            timer = threading.Timer(300, auto_select_medium_quality, args=[rep.id])
+            vd['timer'] = timer
             timer.start()
     except: pass
 
@@ -521,39 +506,43 @@ def universal_callback_handler(client, callback_query):
     s = get_user_settings(user_id)
 
     if data == "settings": send_settings_menu(client, message.chat.id, user_id, message.id)
-    elif data == "settings_toggle_mode":
-        s['auto_compress_type'] = 'percent' if s['auto_compress_type'] == 'crf' else 'crf'
+    elif data == "toggle_auto_mode":
+        s['auto_mode'] = 'percent' if s['auto_mode'] == 'crf' else 'crf'
         send_settings_menu(client, message.chat.id, user_id, message.id)
-    elif data == "settings_set_auto_percent":
-        user_states[user_id] = {"state": "waiting_for_auto_percent_value"}
-        message.reply_text("🔢 أرسل رقم النسبة (1-100)% التي تريد اعتمادها لكل فيديوهاتك تلقائياً:")
+    elif data == "set_auto_pct":
+        user_states[user_id] = {"state": "waiting_for_auto_percent_val"}
+        message.reply_text("🔢 أرسل النسبة (1-100) التي تريدها للتلقائي:")
     elif data == "settings_toggle_auto":
         s['auto_compress'] = not s['auto_compress']
         send_settings_menu(client, message.chat.id, user_id, message.id)
     elif data == "settings_encoder":
-        kb = [[InlineKeyboardButton("H.264 (NVENC)", callback_data="set_encoder:h264_nvenc")],
+        kb = [[InlineKeyboardButton("H.265 (NVENC)", callback_data="set_encoder:hevc_nvenc")],
+              [InlineKeyboardButton("H.264 (NVENC)", callback_data="set_encoder:h264_nvenc")],
               [InlineKeyboardButton("H.264 (CPU)", callback_data="set_encoder:libx264")],
               [InlineKeyboardButton("رجوع", callback_data="settings")]]
-        message.edit_text("إختر الترميز:", reply_markup=InlineKeyboardMarkup(kb))
+        message.edit_text("اختر المحرك:", reply_markup=InlineKeyboardMarkup(kb))
     elif data.startswith("set_encoder:"):
         s['encoder'] = data.split(":")[1]
         send_settings_menu(client, message.chat.id, user_id, message.id)
+    elif data == "settings_custom_quality":
+        user_states[user_id] = {"state": "waiting_for_cq_value"}
+        message.reply_text("🔢 أرسل قيمة CRF للتلقائي:")
     elif data == "close_settings": message.delete()
 
-    # أزرار الفيديو
+    # خيارات الفيديو
     elif message.id in user_video_data:
-        video_data = user_video_data[message.id]
+        vd = user_video_data[message.id]
         if data == "target_percent_prompt":
             user_states[user_id] = {"state": "waiting_for_manual_percent", "button_message_id": message.id}
-            callback_query.answer("أرسل النسبة مئوية الآن..")
+            callback_query.answer("أرسل النسبة (100%)..")
         elif data == "target_size_prompt":
             user_states[user_id] = {"state": "waiting_for_target_size", "button_message_id": message.id}
-            callback_query.answer("أرسل الحجم بالميجا بايت..")
+            callback_query.answer("أرسل الحجم بالـ MB..")
         elif data.startswith("crf_"):
-            video_data['quality'] = data
-            compression_executor.submit(process_video_for_compression, video_data)
+            vd['quality'] = data
+            compression_executor.submit(process_video_for_compression, vd)
         elif data in ["cancel_compression", "finish_process"]:
-            if video_data['file'] and os.path.exists(video_data['file']): os.remove(video_data['file'])
+            if vd['file'] and os.path.exists(vd['file']): os.remove(vd['file'])
             del user_video_data[message.id]
             message.delete()
     callback_query.answer()
