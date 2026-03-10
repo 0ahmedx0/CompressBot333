@@ -374,7 +374,7 @@ def settings_command(client, message):
     send_settings_menu(client, message.chat.id, message.from_user.id)
 
 @app.on_message(filters.text)
-elif state == "waiting_for_target_size":
+    elif state == "waiting_for_target_size":
     prompt_message_id = user_states[user_id].get("prompt_message_id")
     button_message_id = user_states[user_id].get("button_message_id")
 
