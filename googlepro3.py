@@ -85,6 +85,12 @@ def update_progress_msg(current, total, client, message, action, start_time):
         f"{speed_text}"
         f"⏱ **الوقت المتبقي:** `{eta_text}`"
     )
+    # ------------------ جزء الطباعة في السيرفر ------------------
+    # تنظيف النص من علامات التيليجرام لعرضه بشكل جميل في السيرفر
+    clean_action = action.replace('*', '').replace('`', '').split('\n')[0].strip()
+    console_log = f"[Task Msg:{msg_id}] {clean_action} | {percent:.1f}% | {curr_val} / {total_val} {console_speed}| المتبقي: {eta_text}"
+    print(console_log)
+    # -------------------------------------------------------------
     
     try:
         client.edit_message_text(chat_id=message.chat.id, message_id=message.id, text=text)
