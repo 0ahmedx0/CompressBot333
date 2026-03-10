@@ -41,12 +41,12 @@ def get_user_settings(user_id):
 
 def update_progress_msg(current, total, client, message, action, start_time):
     """
-    دالة موحدة لتحديث رسائل التقدم بأسلوب شريط بصري (للتنزيل والرفع والضغط)
+    دالة موحدة لتحديث رسائل التقدم بأسلوب شريط بصري (للتنزيل والرفع والضغط) مع الطباعة في السيرفر
     """
     now = time.time()
     msg_id = message.id
     
-    # تحديث الرسالة كل 3 ثوانٍ فقط لتجنب FloodWait من تيليجرام
+    # تحديث الرسالة والطباعة كل 5 ثوانٍ فقط 
     if msg_id in PROGRESS_TRACKER and (now - PROGRESS_TRACKER[msg_id]) < 5.0 and current < total:
         return
 
@@ -57,17 +57,18 @@ def update_progress_msg(current, total, client, message, action, start_time):
     if filled > 10: filled = 10
     bar = f"[{'█' * filled}{'░' * (10 - filled)}]"
     
-    # إذا كانت الوحدة بالثواني (في حالة الضغط)، نكتفي بعرض النسبة والوقت
     if "ضغط" in action:
         curr_val = f"{current:.1f} ثانية"
         total_val = f"{total:.1f} ثانية"
-    else: # في التنزيل والرفع نعرض الحجم بالميجا
+    else: 
         curr_val = f"{current / (1024 * 1024):.2f} MB"
         total_val = f"{total / (1024 * 1024):.2f} MB"
 
     elapsed = now - start_time
-    # السرعة فقط منطقية للرفع والتنزيل وليس للضغط (تجنباً للأرقام غير الدقيقة)
+    
+    # تعريف المتغيرات الافتراضية هنا لحل مشكلة عدم العثور عليها
     speed_text = ""
+    console_speed = ""  
     eta_text = "جاري الحساب..."
     
     if elapsed > 0:
@@ -76,7 +77,9 @@ def update_progress_msg(current, total, client, message, action, start_time):
             eta_seconds = (total - current) / speed
             eta_text = f"{int(eta_seconds)} ثانية"
             if "ضغط" not in action:
-                speed_text = f"🚀 **السرعة:** `{speed / (1024 * 1024):.2f} MB/s`\n"
+                speed_mb = speed / (1024 * 1024)
+                speed_text = f"🚀 **السرعة:** `{speed_mb:.2f} MB/s`\n"
+                console_speed = f"| السرعة: {speed_mb:.2f} MB/s "
 
     text = (
         f"{action}\n"
@@ -85,8 +88,8 @@ def update_progress_msg(current, total, client, message, action, start_time):
         f"{speed_text}"
         f"⏱ **الوقت المتبقي:** `{eta_text}`"
     )
+
     # ------------------ جزء الطباعة في السيرفر ------------------
-    # تنظيف النص من علامات التيليجرام لعرضه بشكل جميل في السيرفر
     clean_action = action.replace('*', '').replace('`', '').split('\n')[0].strip()
     console_log = f"[Task Msg:{msg_id}] {clean_action} | {percent:.1f}% | {curr_val} / {total_val} {console_speed}| المتبقي: {eta_text}"
     print(console_log)
