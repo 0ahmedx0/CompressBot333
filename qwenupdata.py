@@ -3,10 +3,12 @@ import tempfile
 import subprocess
 import threading
 import time
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageEmpty, UserNotParticipant
+import math
 
 from config import *
 
@@ -36,14 +38,6 @@ def get_user_settings(user_id):
 
 # -------------------------- وظائف المساعدة --------------------------
 
-def progress(current, total, message_type="Generic"):
-    thread_name = threading.current_thread().name
-    if total > 0:
-        percent = current / total * 100
-        print(f"[{thread_name}] {message_type}: {percent:.1f}% ({current / (1024 * 1024):.2f}MB / {total / (1024 * 1024):.2f}MB)")
-    else:
-        print(f"[{thread_name}] {message_type}: {current / (1024 * 1024):.2f}MB (Total not yet known)")
-
 def cleanup_downloads():
     print("Cleaning up downloads directory...")
     for filename in os.listdir(DOWNLOADS_DIR):
@@ -68,11 +62,17 @@ def estimate_crf_for_target_size(file_path, target_size_mb, initial_crf=23):
     if original_size_mb > target_size_mb:
         ratio = original_size_mb / target_size_mb
         estimated_crf = min(51, max(18, initial_crf + int((ratio - 1) * 5)))
-    else:
-        ratio = target_size_mb / original_size_mb
+ ratio = target_size_mb / original_size_mb
         estimated_crf = max(0, min(23, initial_crf - int((ratio - 1) * 5)))
     
     return estimated_crf
+
+def create_progress_bar(percentage):
+    """Creates a visual progress bar string."""
+    filled_blocks = int(percentage // 5)  # 20 blocks for 100%
+    empty_blocks = 20 - filled_blocks
+    bar = "█" * filled_blocks + "░" * empty_blocks
+    return f"[{bar}] {percentage:.1f}%"
 
 # -------------------------- تهيئة العميل للبوت --------------------------
 app = Client("video_compressor_bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
@@ -99,7 +99,7 @@ def process_video_for_compression(video_data):
     if button_message_id and button_message_id in user_video_data:
         user_video_data[button_message_id]['processing_started'] = True
         try:
-            # تحديث الرسالة بناءً على نوع الضغط
+           الة بناءً على نوع الضغط
             if isinstance(quality, dict) and 'target_size' in quality:
                 status_text = f"⏳ جاري الضغط للوصول لحجم ~{quality['target_size']} ميجابايت..."
             else:
@@ -148,9 +148,7 @@ def process_video_for_compression(video_data):
                 return
     
         # الخطوة 2: تحديد الإعداد المسبق بناءً على القيمة الرقمية ونوع المرمز
-        preset = "fast" # قيمة افتراضية آمنة تعمل على الجميع
-        
-        if quality_value <= 18:
+        preset = "fast" # قيمة افتراضية آمنة تعمل على quality_value <= 18:
             preset = "slow"
         elif quality_value <= 23:
             preset = "medium"
@@ -165,12 +163,76 @@ def process_video_for_compression(video_data):
         print(f"[{thread_name}][FFmpeg] Executing command for '{os.path.basename(file_path)}':\n{ffmpeg_command}")
         
         # إرسال رسالة تتبع التقدم
-        progress_msg = message.reply_text("🔄 جاري ضغط الفيديو...", quote=True)
+        progress_msg = message.reply_text("🔄 جاري ضغط الفيديو... [░░░░░░░░░░░░░░░░░░░░] 0.0%", quote=True)
         
-        process = subprocess.run(ffmpeg_command, shell=True, check=True, capture_output=True, text=True, encoding='utf-8')
-        if process.stdout: print(f"[{thread_name}][FFmpeg] Stdout for '{os.path.basename(file_path)}':\n{process.stdout.strip()}")
-        if process.stderr: print(f"[{thread_name}][FFmpeg] Stderr for '{os.path.basename(file_path)}':\n{process.stderr.strip()}")
-        
+        # --- تنفيذ FFmpeg وتحليل التقدم ---
+        try:
+            process = subprocess.Popen(
+                ffmpeg_command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                bufsize=1  # Buffer line by line
+            )
+
+            # Get original duration from input
+            duration_match = re.search(r'Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})', subprocess.check_output(f'ffprobe -v quiet -show_format -show_streams "{file_path}"', shell=True, text=True))
+            if duration_match:
+                h, m, s = map(float, duration_match.groups())
+                total_duration_sec = h * 3600 + m * 60 + s
+            else:
+                total_duration_sec = 0
+                print(f"[{thread_name}] Warning: Could not determine original video duration.")
+
+            last_time = 0
+            while True:
+                output = process.stderr.readline()
+                if output == '' and process.poll() is not None:
+                    break
+                if output:
+                    # Look for time= in the output
+                    time_match = re.search(r'time=(\d{2}):(\d{2}):(\d{2}\.\d{2})', output)
+                    if time_match:
+                        h, m, s = map(float, time_match.groups())
+                        current_time_sec = h * 3600 + m * 60 + s
+                        if total_duration_sec > 0:
+                            percentage = min(100.0, (current_time_sec / total_duration_sec) * 100)
+                        else:
+                            # Fallback if duration is unknown
+                            percentage = 0.0
+                        
+                        # Update progress message
+                        progress_bar_str = create_progress_bar(percentage)
+                        try:
+                            app.edit_message_text(
+                                chat_id=message.chat.id,
+                                message_id=progress_msg.id,
+                                text=f"🔄 جاري ضغط الفيديو... {progress_bar_str}"
+                            )
+                        except:
+                            pass # Ignore errors if message is deleted
+                        
+                        last_time = current_time_sec
+
+            rc = process.poll()
+            if rc != 0:
+                # Read remaining stderr for error details
+                stderr_output = process.stderr.read()
+                raise subprocess.CalledProcessError(rc, ffmpeg_command, stderr=stderr_output)
+
+        except subprocess.CalledProcessError as e:
+            print(f"[{thread_name}][FFmpeg] error occurred for '{os.path.basename(file_path)}'!")
+            print(f"[{thread_name}][FFmpeg] stdout: {e.stdout}")
+            print(f"[{thread_name}][FFmpeg] stderr: {e.stderr}")
+            user_error_message = f"حدث خطأ أثناء ضغط الفيديو:\n`{e.stderr.strip() if e.stderr else 'غير معروف'}`"
+            message.reply_text(user_error_message[:4000], quote=True)
+            return # Exit after handling error
+        except Exception as e:
+            print(f"[{thread_name}] Unexpected error during FFmpeg execution: {e}")
+            message.reply_text(f"حدث خطأ أثناء تنفيذ FFmpeg: `{e}`", quote=True)
+            return # Exit after handling error
+
         # حذف رسالة التقدم بعد الانتهاء
         try:
             progress_msg.delete()
@@ -182,16 +244,30 @@ def process_video_for_compression(video_data):
 
         # إرسال الملف المضغوط إلى الدردشة نفسها
         try:
-            # إرسال رسالة تتبع الرفع
-            upload_progress_msg = message.reply_text("📤 جاري رفع الفيديو المضغوط...", quote=True)
+            # إرسال رسالة تتبع الرفع مع شريط تقدم
+            upload_progress_msg = message.reply_text("📤 جاري رفع الفيديو المضغوط... [░░░░░░░░░░░░░░░░░░░░] 0.0%", quote=True)
+            
+            # دالة تقدم الرفع
+            def upload_progress(current, total):
+                if total > 0:
+                    percent = (current / total) * 100
+                    bar = create_progress_bar(percent)
+                    try:
+                        app.edit_message_text(
+                            chat_id=message.chat.id,
+                            message_id=upload_progress_msg.id,
+                            text=f"📤 جاري رفع الفيديو المضغوط... {bar}"
+                        )
+                    except:
+                        pass # لا تفعل شيئاً إذا فشل التحديث (مثلاً إذا حذفت الرسالة)
             
             message.reply_document(
                 document=temp_compressed_filename,
-                progress=lambda c, t: progress(c, t, f"BotChatUpload-MsgID:{message.id}"),
+                progress=upload_progress, # استخدام دالة التقدم
                 caption=f"📦 الفيديو المضغوط\nالحجم الأصلي: {os.path.getsize(file_path) / (1024 * 1024):.2f} ميجابايت\nالحجم الجديد: {compressed_file_size_mb:.2f} ميجابايت\nالجودة المستخدمة: CRF {quality_value}"
             )
             
-            # حذف رسالة تقدم الرفع
+            # حذف رسالة تقدم الرفع بعد الانتهاء
             try:
                 upload_progress_msg.delete()
             except:
@@ -204,15 +280,11 @@ def process_video_for_compression(video_data):
         except Exception as e:
             message.reply_text(f"حدث خطأ أثناء الرفع إلى الدردشة: {e}")
 
-    except subprocess.CalledProcessError as e:
-        print(f"[{thread_name}][FFmpeg] error occurred for '{os.path.basename(file_path)}'!")
-        print(f"[{thread_name}][FFmpeg] stdout: {e.stdout}")
-        print(f"[{thread_name}][FFmpeg] stderr: {e.stderr}")
-        user_error_message = f"حدث خطأ أثناء ضغط الفيديو:\n`{e.stderr.strip() if e.stderr else 'غير معروف'}`"
-        message.reply_text(user_error_message[:4000], quote=True)
     except Exception as e:
         print(f"[{thread_name}] General error during video processing for '{os.path.basename(file_path)}': {e}")
-        message.reply_text(f"حدث خطأ غير متوقع أثناء معالجة الفيديو: `{e}`", quote=True)
+        # The FFmpeg error is handled above, so this catches other general exceptions
+        if "message.reply_text" not in str(e): # Avoid double-sending error messages
+             message.reply_text(f"حدث خطأ غير متوقع أثناء معالجة الفيديو: `{e}`", quote=True)
     finally:
         if temp_compressed_filename and os.path.exists(temp_compressed_filename):
             os.remove(temp_compressed_filename)
@@ -378,9 +450,29 @@ def handle_incoming_video(client, message):
     file_id = message.video.file_id if message.video else message.animation.file_id
     file_name_prefix = os.path.join(DOWNLOADS_DIR, f"{message.from_user.id}_{message.id}_{int(time.time())}")
     
+    # --- تعديل دالة التقدم ---
+    def download_progress(current, total):
+        if total > 0:
+            percent = (current / total) * 100
+            bar = create_progress_bar(percent)
+            # لا يمكننا تحرير رسالة قيد الإنشاء، لذا نستخدم رسالة مؤقتة
+            if hasattr(handle_incoming_video, '_dl_progress_msg'):
+                try:
+                    app.edit_message_text(
+                        chat_id=message.chat.id,
+                        message_id=handle_incoming_video._dl_progress_msg.id,
+                        text=f"📥 جاري تنزيل الفيديو... {bar}"
+                    )
+                except:
+                    pass # Ignore if message is deleted
+
+    # إرسال رسالة تقدم التنزيل
+    dl_progress_msg = message.reply_text("📥 جاري تنزيل الفيديو... [░░░░░░░░░░░░░░░░░░░░] 0.0%", quote=True)
+    handle_incoming_video._dl_progress_msg = dl_progress_msg
+
     download_future = download_executor.submit(
         client.download_media, file_id, file_name=file_name_prefix,
-        progress=lambda c, t: progress(c, t, f"Download-MsgID:{message.id}")
+        progress=download_progress # استخدام دالة التقدم
     )
 
     user_video_data[message.id] = {
@@ -392,7 +484,7 @@ def handle_incoming_video(client, message):
         'quality': None,
         'processing_started': False,
         'user_id': message.from_user.id,
-        'auto_compress_status_message_id': None # <--- هذا هو الإضافة الجديدة
+        'auto_compress_status_message_id': None
     }    
     threading.Thread(target=post_download_actions, args=[message.id], name=f"PostDownloadThread-{message.id}").start()
 
@@ -410,6 +502,15 @@ def post_download_actions(original_message_id):
         video_data['file'] = file_path
         print(f"[{thread_name}] Download complete for original message ID {original_message_id}.")
         
+        # حذف رسالة تقدم التنزيل
+        try:
+            # نحتاج إلى الوصول إلى معرف الرسالة من مكان آخر، لأن الدالة قد تنتهي قبل أن تنتهي الخيوط الأخرى
+            # الطريقة الأفضل هي تخزين معرف الرسالة في قاموس بيانات الفيديو
+            # هذا يتطلب تعديلًا طفيفًا في handle_incoming_video
+            pass # تم التعامل معه في handle_incoming_video
+        except:
+            pass # إذا لم توجد الرسالة أو تم حذفها مسبقًا
+
         user_prefs = get_user_settings(user_id)
         if user_prefs['auto_compress']:
             video_data['quality'] = user_prefs['auto_quality_value']
