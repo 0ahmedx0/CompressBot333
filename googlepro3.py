@@ -47,7 +47,7 @@ def update_progress_msg(current, total, client, message, action, start_time):
     msg_id = message.id
     
     # تحديث الرسالة كل 3 ثوانٍ فقط لتجنب FloodWait من تيليجرام
-    if msg_id in PROGRESS_TRACKER and (now - PROGRESS_TRACKER[msg_id]) < 3.0 and current < total:
+    if msg_id in PROGRESS_TRACKER and (now - PROGRESS_TRACKER[msg_id]) < 5.0 and current < total:
         return
 
     PROGRESS_TRACKER[msg_id] = now
