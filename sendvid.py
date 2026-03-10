@@ -39,17 +39,20 @@ def get_user_settings(user_id):
 
 # -------------------------- وظائف المساعدة وحساب الحجم والتقدم --------------------------
 
-def update_progress_msg(current, total, client, message, action, start_time):
+def update_progress_msg(current, total, client, message, action, start_time, known_size=0):
     """
-    دالة موحدة لتحديث رسائل التقدم مع معالجة الأخطاء والطباعة في السيرفر
+    دالة موحدة لتحديث رسائل التقدم مع استخدام حجم احتياطي مؤكد لضمان دقة الحسابات
     """
     now = time.time()
     msg_id = message.id
     
-    # تحديد ما إذا كانت العملية انتهت أم لا
+    # --- تعديل جديد: استخدام الحجم الصحيح إذا فشل pyrogram في جلبه ---
+    if total <= 0 and known_size > 0:
+        total = known_size
+    # --- نهاية التعديل ---
+
     is_finished = (current >= total) if total > 0 else False
     
-    # تحديث الرسالة والطباعة كل 5 ثوانٍ فقط (لتجنب حظر تيليجرام وتقليل أسطر السيرفر)
     if msg_id in PROGRESS_TRACKER and (now - PROGRESS_TRACKER[msg_id]) < 5.0 and not is_finished:
         return
 
@@ -60,7 +63,6 @@ def update_progress_msg(current, total, client, message, action, start_time):
     if filled > 10: filled = 10
     bar = f"[{'█' * filled}{'░' * (10 - filled)}]"
     
-    # تجنب إظهار 0.00 MB إذا لم تكن البيانات متوفرة
     if "ضغط" in action:
         curr_val = f"{current:.1f} ثانية"
         total_val = f"{total:.1f} ثانية" if total > 0 else "??"
@@ -94,11 +96,9 @@ def update_progress_msg(current, total, client, message, action, start_time):
         f"⏱ **الوقت المتبقي:** `{eta_text}`"
     )
 
-    # ------------------ جزء الطباعة في السيرفر ------------------
     clean_action = action.replace('*', '').replace('`', '').split('\n')[0].strip()
     console_log = f"[Task Msg:{msg_id}] {clean_action} | {percent:.1f}% | {curr_val} / {total_val} {console_speed}| المتبقي: {eta_text}"
     print(console_log)
-    # -------------------------------------------------------------
     
     try:
         client.edit_message_text(chat_id=message.chat.id, message_id=message.id, text=text)
@@ -108,7 +108,7 @@ def update_progress_msg(current, total, client, message, action, start_time):
         pass
     except Exception:
         pass
-
+        
 def get_video_info_and_thumb(file_path):
     """
     تستخرج المدة والأبعاد من الفيديو وتلتقط صورة مصغرة (Thumbnail) لتستخدمها تيليجرام
@@ -454,6 +454,15 @@ def send_settings_menu(client, chat_id, user_id, message_id=None):
 @app.on_message(filters.video | filters.animation)
 def handle_incoming_video(client, message):
     file_id = message.video.file_id if message.video else message.animation.file_id
+    
+    # --- تعديل جديد: جلب الحجم الصحيح من الرسالة ---
+    file_size = 0
+    if message.video and message.video.file_size:
+        file_size = message.video.file_size
+    elif message.animation and message.animation.file_size:
+        file_size = message.animation.file_size
+    # --- نهاية التعديل ---
+
     file_name_prefix = os.path.join(DOWNLOADS_DIR, f"{message.from_user.id}_{message.id}_{int(time.time())}.mp4")
     
     download_msg = message.reply_text("📥 يتم إنشاء الاتصال لتنزيل الفيديو لخادم المعالجة...", quote=True)
@@ -464,7 +473,8 @@ def handle_incoming_video(client, message):
         message=file_id,
         file_name=file_name_prefix,
         progress=update_progress_msg,
-        progress_args=(client, download_msg, "📥 **جاري تنزيل الملف الخ...**", start_time)
+        # --- تعديل جديد: تمرير الحجم الصحيح كوسيط إضافي ---
+        progress_args=(client, download_msg, "📥 **جاري تنزيل الملف الخ...**", start_time, file_size)
     )
 
     user_video_data[message.id] = {
@@ -480,7 +490,7 @@ def handle_incoming_video(client, message):
         'auto_compress_status_message_id': None 
     }    
     threading.Thread(target=post_download_actions, args=[message.id]).start()
-
+    
 def post_download_actions(original_message_id):
     if original_message_id not in user_video_data: return
     video_data = user_video_data[original_message_id]
