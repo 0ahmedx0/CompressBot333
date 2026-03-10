@@ -18,7 +18,7 @@ DOWNLOADS_DIR = "./downloads"
 if not os.path.exists(DOWNLOADS_DIR):
     os.makedirs(DOWNLOADS_DIR)
 
-# ---- التعديل رقم 1: المزامنة لـ 3 مهام كحد أقصى للتحميل و 3 للضغط ----
+# التزامنية لـ 3 مهام كحد أقصى للتحميل و 3 للضغط
 download_executor = ThreadPoolExecutor(max_workers=3)
 compression_executor = ThreadPoolExecutor(max_workers=5)
 
@@ -28,18 +28,18 @@ user_settings = {}
 user_video_data = {}
 PROGRESS_TRACKER = {} # لتتبع وقت آخر تحديث لرسائل التقدم (تجنب الحظر FloodWait)
 
-# ---- الإضافة للتحكم بالألبوم والمهام المتزامنة بالخلفية ----
+# للإدارة والتخزين الخاص بالألبوم والمهام المتزامنة بالخلفية
 user_active_tasks = {}       # يحفظ عدد الفيديوهات الجاري معالجتها حالياً للمستخدم
 user_finished_files = {}     # يخزن مسارات الملفات التي اكتمل ضغطها لتكوين الألبوم
 task_lock = threading.Lock() # لمنع التداخل بين الملفات المتزامنة
 
-# ---- التعديل رقم 2: تحديث الإعدادات لتدعم النسبة المئوية والنمط ----
+# إعدادات البوت الافتراضية مدعمة بالنسبة المئوية التلقائية
 DEFAULT_SETTINGS = {
     'encoder': 'h264_nvenc',
     'auto_compress': False,
     'auto_quality_value': 30,
-    'auto_mode': 'percent',         # إضافة: يحدد إذا التلقائي هو CRF أو نسبة (percent)
-    'auto_percent_value': 30    # إضافة: النسبة التلقائية الافتراضية 50%
+    'auto_mode': 'crf',         
+    'auto_percent_value': 50    
 }
 
 def get_user_settings(user_id):
@@ -56,14 +56,14 @@ def check_and_prompt_album(user_id, client, chat_id):
             if user_active_tasks[user_id] <= 0:
                 user_active_tasks[user_id] = 0
                 files_ready = user_finished_files.get(user_id, [])
-                if len(files_ready) > 1:
+                if len(files_ready) >= 1: # سواء فيديو واحد أو عدة فيديوهات
                     markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📦 إرسال الجميع كألبوم", callback_data="send_batch_album")],
-                        [InlineKeyboardButton("🗑️ مسح الذاكرة وتجاهل الألبوم", callback_data="clear_batch_album")]
+                        [InlineKeyboardButton("📦 إرسال النتيجة (تجميع للنهائي)", callback_data="send_batch_album")],
+                        [InlineKeyboardButton("🗑️ مسح الذاكرة (إلغاء الكل)", callback_data="clear_batch_album")]
                     ])
                     client.send_message(
                         chat_id,
-                        f"✅ **اكتملت جميع العمليات بالخلفية!**\nلديك ({len(files_ready)}) فيديوهات مضغوطة وجاهزة، هل ترغب في دمجها في رسالة واحدة (ألبوم)؟",
+                        f"✅ **اكتملت جميع العمليات بالخلفية!**\nلديك ({len(files_ready)}) ملفات مضغوطة وجاهزة، هل ترغب في إرسالها الآن؟",
                         reply_markup=markup
                     )
 
@@ -313,7 +313,7 @@ def process_video_for_compression(video_data):
         compressed_file_size_mb = os.path.getsize(temp_compressed_filename) / (1024 * 1024)
         print(f"[{thread_name}] Compression Done! New Size: {compressed_file_size_mb:.2f} MB")
 
-        # ---- إضافة: حفظ الملف لاستخدامه لاحقاً في الألبوم ----
+        # حفظ الملف لاستخدامه لاحقاً في الألبوم (دون رفع فردي)
         try:
             album_copy_path = os.path.join(DOWNLOADS_DIR, f"album_file_{user_id}_{int(time.time()*100)}.mp4")
             shutil.copy2(temp_compressed_filename, album_copy_path)
@@ -324,34 +324,18 @@ def process_video_for_compression(video_data):
         except Exception as ex:
             print(f"Failed to copy file for album: {ex}")
 
-        upload_progress_msg = message.reply_text("📤 اكتمل الضغط! بدأ الرفع النهائي كفيديو منفصل...", quote=True)
-        upload_start_time = time.time()
-
-        # استخراج الصورة المصغرة والمعلومات لجعل الفيديو Streamable
-        thumb_path, vid_duration, vid_width, vid_height = get_video_info_and_thumb(temp_compressed_filename)
-
-        # الرفع الفردي باستخدام reply_video كما طلبت عدم تغييره
-        message.reply_video(
-            video=temp_compressed_filename,
-            progress=update_progress_msg,
-            progress_args=(app, upload_progress_msg, "📤 **الرفع إلى التليجرام...**", upload_start_time),
-            caption=f"📦 **النتيجة النهائية**\n"
-                    f"🔻 الحجم القديم: {os.path.getsize(file_path) / (1024 * 1024):.2f} MB\n"
-                    f"✅ الحجم الجديد: {compressed_file_size_mb:.2f} MB\n\n"
-                    f"{used_mode_text}",
-            duration=int(vid_duration),
-            width=vid_width,
-            height=vid_height,
-            thumb=thumb_path, 
-            supports_streaming=True 
+        # رسالة تفيد بانتهاء هذا الفيديو بالذات بدلا من رفعه (لأنه ينتظر الألبوم)
+        message.reply_text(
+            f"✅ **اكتمل ضغط الملف وجاري حفظه للرفع النهائي...**\n\n"
+            f"🔻 الحجم القديم: {os.path.getsize(file_path) / (1024 * 1024):.2f} MB\n"
+            f"✅ الحجم الجديد: {compressed_file_size_mb:.2f} MB\n\n"
+            f"{used_mode_text}",
+            quote=True
         )
-        
-        try: upload_progress_msg.delete()
-        except: pass
         
     except Exception as e:
         print(f"[{thread_name}] Processing error: {e}")
-        message.reply_text(f"❌ حدث خطأ أثناء المعالجة أو الرفع:\n`{str(e)[:150]}`", quote=True)
+        message.reply_text(f"❌ حدث خطأ أثناء المعالجة:\n`{str(e)[:150]}`", quote=True)
     finally:
         # حذف الملفات المؤقتة الخاصة بـ ffmpeg
         if temp_compressed_filename and os.path.exists(temp_compressed_filename):
@@ -382,7 +366,7 @@ def process_video_for_compression(video_data):
                     reply_markup=markup)
             except: pass
 
-        # عند الانتهاء (سواء نجاح أو فشل) استدعِ فحص الألبوم
+        # عند الانتهاء (سواء نجاح أو فشل) استدعِ فحص الألبوم وإرساله
         check_and_prompt_album(user_id, app, message.chat.id)
 
 
@@ -404,7 +388,7 @@ def auto_select_medium_quality(button_message_id):
 def start_command(client, message):
     settings_button = InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ الإعدادات", callback_data="settings")]])
     message.reply_text(
-        "👋 أهلاً بك! أرسل لي فيديوهات (ويمكنك إرسال مجموعة معاً للضغط المتزامن 3/3).\nيدعم البوت اختيار الجودة، الحجم، والنسبة المئوية، ويرسلها كألبوم بالنهاية.",
+        "👋 أهلاً بك! أرسل لي فيديوهات (ويمكنك إرسال مجموعة معاً للضغط المتزامن 3/3).\nسيتم تجميعها وإرسالها لك في ألبوم بعد الانتهاء.",
         reply_markup=settings_button, quote=True
     )
 
@@ -421,7 +405,6 @@ def handle_text_inputs(client, message):
     state_data = user_states[user_id]
     state = state_data.get("state")
     
-    # 1. إدخال الحجم (الميجا بايت) يدوي
     if state == "waiting_for_target_size":
         prompt_message_id = state_data.get("prompt_message_id")
         button_message_id = state_data.get("button_message_id")
@@ -450,7 +433,6 @@ def handle_text_inputs(client, message):
             try: message.delete()
             except: pass
 
-    # 2. إدخال النسبة المئوية (%) يدوي للفيديو المختار
     elif state == "waiting_for_percentage":
         button_message_id = state_data.get("button_message_id")
         try:
@@ -459,10 +441,8 @@ def handle_text_inputs(client, message):
             if button_message_id and button_message_id in user_video_data:
                 video_data = user_video_data[button_message_id]
                 if not video_data.get('processing_started') and video_data.get('file'):
-                    # الحساب: (النسبة/100) * حجم الملف الأصلي بالميجا
                     orig_size_mb = os.path.getsize(video_data['file']) / (1024 * 1024)
                     target_mb = (pct / 100) * orig_size_mb
-                    
                     video_data['quality'] = {"target_size": target_mb}
                     try:
                         app.edit_message_reply_markup(chat_id=message.chat.id, message_id=button_message_id,
@@ -477,7 +457,6 @@ def handle_text_inputs(client, message):
             try: message.delete()
             except: pass
 
-    # 3. تغيير قيمة الـ CRF التلقائي (من الإعدادات)
     elif state == "waiting_for_cq_value":
         try:
             val = int(message.text)
@@ -491,7 +470,6 @@ def handle_text_inputs(client, message):
         except:
             message.reply_text("❌ يرجى إدخال رقم صحيح.")
 
-    # 4. تغيير النسبة المئوية للتلقائي (من الإعدادات)
     elif state == "waiting_for_auto_percentage":
         try:
             val = float(message.text)
@@ -549,16 +527,13 @@ def post_download_actions(original_message_id):
         
         user_prefs = get_user_settings(user_id)
         if user_prefs['auto_compress']:
-            # قراءة الإعداد: هل المستخدم يريد تلقائي CRF أو نسبة مئوية؟
             if user_prefs.get('auto_mode') == 'percent':
-                # إذا تلقائي كنسبة:
                 orig_size_mb = os.path.getsize(file_path) / (1024 * 1024)
                 pct_value = user_prefs.get('auto_percent_value', 50)
                 target_mb = (pct_value / 100) * orig_size_mb
                 video_data['quality'] = {"target_size": target_mb}
                 status_msg = message.reply_text(f"✅ تم التحميل، يضغط تلقائياً بقوة **{pct_value}%** من حجمه الأصلي...", quote=True)
             else:
-                # إذا تلقائي كجودة:
                 video_data['quality'] = user_prefs['auto_quality_value']
                 status_msg = message.reply_text(f"✅ تم تحميل الملف. يضغط تلقائياً لـ **CRF {video_data['quality']}**...", quote=True)
             
@@ -583,14 +558,13 @@ def post_download_actions(original_message_id):
     except Exception as e:
         message.reply_text(f"❌ وقع خطأ مقاطع أثناء التحميل:\n`{e}`")
         if original_message_id in user_video_data: del user_video_data[original_message_id]
-        check_and_prompt_album(user_id, app, message.chat.id) # تقليل العداد لأن المهمة فشلت
+        check_and_prompt_album(user_id, app, message.chat.id)
 
 
 @app.on_message(filters.video | filters.animation)
 def handle_incoming_video(client, message):
     user_id = message.from_user.id
 
-    # تسجيل أن هناك عملية نشطة قادمة للمستخدم (مهمة للألبوم)
     with task_lock:
         user_active_tasks[user_id] = user_active_tasks.get(user_id, 0) + 1
 
@@ -601,7 +575,6 @@ def handle_incoming_video(client, message):
     download_msg = message.reply_text("📥 في طابور التنزيل...", quote=True)
     start_time = time.time()
     
-    # يعمل التحميل كطابور متزامن (3/3)
     download_future = download_executor.submit(
         client.download_media,
         message=file_id,
@@ -623,26 +596,36 @@ def universal_callback_handler(client, callback_query):
     user_id = callback_query.from_user.id
     message = callback_query.message
 
-    # ----- التحكم في إرسال الألبوم الجديد -----
+    # ----- التحكم في إرسال الألبوم / النتيجة النهائية -----
     if data == "send_batch_album":
         with task_lock:
             files_to_send = user_finished_files.get(user_id, [])
             if not files_to_send:
-                callback_query.answer("⚠️ لا توجد ملفات في الذاكرة لتجميعها كألبوم.", show_alert=True)
+                callback_query.answer("⚠️ لا توجد ملفات في الذاكرة لرفعها.", show_alert=True)
                 return
-            callback_query.answer("📤 يتم الآن معالجة ورفع الألبوم، انتظر...")
+            callback_query.answer("📤 يتم الآن معالجة ورفع النتيجة، انتظر قليلاً...")
             
             media_group = []
-            for f_path in files_to_send[:10]: # أقصى عدد في تيليجرام 10 لكل رسالة ألبوم
+            for f_path in files_to_send[:10]:
                 thumb, dur, w, h = get_video_info_and_thumb(f_path)
                 media_group.append(InputMediaVideo(f_path, thumb=thumb, duration=int(dur), width=w, height=h))
             
             try:
-                client.send_media_group(chat_id=message.chat.id, media=media_group)
+                # إذا كان فيديو واحد، تيليجرام لا يقبله في دالة الألبوم، لذلك نرفعه كفيديو منفصل
+                if len(media_group) == 1:
+                    f_path = files_to_send[0]
+                    thumb, dur, w, h = get_video_info_and_thumb(f_path)
+                    client.send_video(
+                        chat_id=message.chat.id,
+                        video=f_path,
+                        caption="📦 النتيجة النهائية للملف.",
+                        duration=int(dur), width=w, height=h, thumb=thumb, supports_streaming=True
+                    )
+                else:
+                    client.send_media_group(chat_id=message.chat.id, media=media_group)
             except Exception as e:
-                client.send_message(message.chat.id, f"❌ خطأ أثناء إرسال الألبوم: {e}")
+                client.send_message(message.chat.id, f"❌ خطأ أثناء الرفع: {e}")
             finally:
-                # حذف الملفات من القرص بعد الإرسال للحفاظ على المساحة
                 for f_path in files_to_send:
                     if os.path.exists(f_path): os.remove(f_path)
                 user_finished_files[user_id] = []
@@ -656,7 +639,7 @@ def universal_callback_handler(client, callback_query):
             for f_path in files_to_send:
                 if os.path.exists(f_path): os.remove(f_path)
             user_finished_files[user_id] = []
-        callback_query.answer("🗑 تم تنظيف ذاكرة الألبوم للملفات بنجاح.")
+        callback_query.answer("🗑 تم تنظيف ذاكرة الملفات بنجاح.")
         try: message.delete()
         except: pass
         return
@@ -692,7 +675,6 @@ def universal_callback_handler(client, callback_query):
         callback_query.answer()
         return
 
-    # ---------------- ضبط الـ encoder ----------------
     elif data.startswith("set_encoder:"):
         _, value = data.split(":", 1)
         get_user_settings(user_id)['encoder'] = value
@@ -700,7 +682,6 @@ def universal_callback_handler(client, callback_query):
         send_settings_menu(client, message.chat.id, user_id, message.id)
         return
 
-    # ---------------- إلغاء استقبال الرسائل ----------------
     elif data == "cancel_input":
         if user_id in user_states: del user_states[user_id]
         callback_query.answer("تم إلغاء حالة الاستقبال.")
@@ -711,7 +692,6 @@ def universal_callback_handler(client, callback_query):
         except: pass
         return
 
-    # ---------------- التحقق من الفيديو ----------------
     button_message_id = message.id
     if button_message_id not in user_video_data:
         callback_query.answer("زر قديم جداً منتهي الصلاحية.", show_alert=True)
@@ -724,49 +704,40 @@ def universal_callback_handler(client, callback_query):
         callback_query.answer("طابور التنفيذ يعمل بالفعل للفيديو...", show_alert=True)
         return
 
-    # ---------------- إلغاء العملية والإنهاء ----------------
     if data in ["cancel_compression", "finish_process"]:
         if video_data.get('timer') and video_data['timer'].is_alive(): video_data['timer'].cancel()
         file_path = video_data.get('file')
         if file_path and os.path.exists(file_path): 
             os.remove(file_path)
-            print(f"File Deleted on exit: {file_path}")
         try:
             message.delete()
             if data == "cancel_compression":
                 video_data['message'].reply_text("🗑️ دُمر الطلب وأُزيل الملف الأصلي من الذاكرة بنجاح.", quote=True)
         except Exception: pass
-        
-        # لأن المستخدم ألغى، نلغي مهمته من عداد الألبوم
         check_and_prompt_album(user_id, client, message.chat.id)
-        
         if button_message_id in user_video_data: del user_video_data[button_message_id]
         return
 
-    # ---------------- طلب تحديد الحجم المستهدف أو النسبة اليدوية ----------------
     if data == "target_size_prompt":
         if video_data.get('timer') and video_data['timer'].is_alive(): video_data['timer'].cancel()
-        prompt_msg = message.reply_text("🔢 رجاءً أرسل الحجم (المستهدف) رقماً بالميغا بايت في الدردشة الآن.\n*(مثال: 5.5 أو 12)*", quote=True)
+        prompt_msg = message.reply_text("🔢 رجاءً أرسل الحجم (المستهدف) رقماً بالميغا بايت في الدردشة الآن.", quote=True)
         user_states[user_id] = {"state": "waiting_for_target_size", "prompt_message_id": prompt_msg.id, "button_message_id": button_message_id}
         callback_query.answer("في الانتظار لكتابة الحجم...")
         return
         
     if data == "target_percent_prompt":
         if video_data.get('timer') and video_data['timer'].is_alive(): video_data['timer'].cancel()
-        prompt_msg = message.reply_text("🔢 رجاءً أرسل النسبة المئوية (1-100) ليقوم البوت بضغط الملف بناءً على حجمه.\n*(مثال: أرسل 30 للحصول على 30% من الحجم الحالي)*", quote=True)
+        prompt_msg = message.reply_text("🔢 رجاءً أرسل النسبة المئوية (1-100) ليقوم البوت بضغط الملف بناءً على حجمه.", quote=True)
         user_states[user_id] = {"state": "waiting_for_percentage", "prompt_message_id": prompt_msg.id, "button_message_id": button_message_id}
         callback_query.answer("في الانتظار للنسبة المئوية...")
         return
 
     if video_data.get('timer') and video_data['timer'].is_alive(): video_data['timer'].cancel()
-
-    # ---------------- اختيار الجودة CRF مباشرة ----------------
     video_data['quality'] = data
     callback_query.answer("في المعالجة... يرجى التمهل")
     compression_executor.submit(process_video_for_compression, video_data)
 
-# -------------------------- التشغيل --------------------------
 if __name__ == "__main__":
     cleanup_downloads()
-    print("\n✅ البوت تم تجهيزه بالمهام المتزامنة. المزامنة مستمرة بنجاح...")
+    print("\n✅ البوت تم تجهيزه. المزامنة مستمرة بنجاح...")
     app.run()
