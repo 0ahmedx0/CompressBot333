@@ -304,7 +304,7 @@ def process_video_for_compression(video_data):
             width=vid_width,
             height=vid_height,
             thumb=thumb_path, 
-            supports_streaming=True 
+            supports_streaming=False 
         )
         
         try: upload_progress_msg.delete()
