@@ -303,8 +303,6 @@ def process_video_for_compression(video_data):
             os.remove(temp_compressed_filename)
         if thumb_path and os.path.exists(thumb_path):
             os.remove(thumb_path)
-        if file_path and os.path.exists(file_path):
-            os.remove(file_path)
 
         auto_compress_status_message_id = video_data.get('auto_compress_status_message_id')
         if auto_compress_status_message_id:
