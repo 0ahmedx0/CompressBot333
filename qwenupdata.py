@@ -378,7 +378,6 @@ def handle_custom_quality_input(client, message):
                 send_settings_menu(client, message.chat.id, user_id, prompt_message_id)
             else:
                 message.reply_text("❌ قيمة غير صالحة. الرجاء إدخال رقم بين 0 و 51.", quote=True)
-        except ValueError:
             message.reply_text("❌ إدخال غير صالح. الرجاء إرسال رقم صحيح فقط.", quote=True)
         finally:
             try: message.delete()
@@ -440,7 +439,7 @@ def send_settings_menu(client, chat_id, user_id, message_id=None):
                 [InlineKeyboardButton("✖️ إغلاق", callback_data="close_settings")]]
 
     if message_id:
-        try: client.edit_message_text(chat_id, message_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
+        try: client.edit_message_text(chat_id,, reply_markup=InlineKeyboardMarkup(keyboard))
         except Exception: pass
     else:
         client.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -534,7 +533,7 @@ def post_download_actions(original_message_id):
             user_video_data[reply_message.id]['timer'] = timer
             timer.start()
     except Exception as e:
-        print(f"[{thread_name}] Error during post-download actions fororiginal_message_id}: {e}")
+        print(f"[{thread_name}] Error during post-download actions for original_message_id {original_message_id}: {e}")
         message.reply_text(f"حدث خطأ أثناء تنزيل الفيديو: `{e}`")
         if original_message_id in user_video_data: del user_video_data[original_message_id]
 
@@ -609,7 +608,7 @@ def universal_callback_handler(client, callback_query):
             return
         
         # طلب إدخال الحجم
-        prompt_msg = message.reply_text("🔢 أرسل الحجم المطلوب للملف المضغوط (بالميغابايت):", quote=True)
+        prompt_msg = message.reply_text("🔢 أرسل الحجم المطلوب للملف المضغوط (بالميغابايت)
         user_states[user_id] = {
             "state": "waiting_for_target_size", 
             "prompt_message_id": prompt_msg.id,
