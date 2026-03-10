@@ -374,30 +374,49 @@ def settings_command(client, message):
     send_settings_menu(client, message.chat.id, message.from_user.id)
 
 @app.on_message(filters.text)
-def handle_text_inputs(client, message):
-    user_id = message.from_user.id
-    if user_id not in user_states: return
+elif state == "waiting_for_target_size":
+    prompt_message_id = user_states[user_id].get("prompt_message_id")
+    button_message_id = user_states[user_id].get("button_message_id")
 
-    state = user_states[user_id].get("state")
-    
-    if state == "waiting_for_cq_value":
-        prompt_message_id = user_states[user_id].get("prompt_message_id")
-        try:
-            value = int(message.text)
-            if 0 <= value <= 51:
-                settings = get_user_settings(user_id)
-                settings['auto_quality_value'] = value
-                del user_states[user_id]
-                message.reply_text(f"✅ تم تحديث الجودة الافتراضية للضغط التلقائي: **CRF/CQ {value}**", quote=True)
-                send_settings_menu(client, message.chat.id, user_id, prompt_message_id)
+    try:
+        size = float(message.text)
+        if size <= 0: raise ValueError
+
+        if button_message_id and button_message_id in user_video_data:
+            video_data = user_video_data[button_message_id]
+            if not video_data.get('processing_started') and video_data.get('file'):
+                video_data['quality'] = {"target_size": size}
+
+                # تحديث الزر لتأكيد الطلب الجديد
+                try:
+                    app.edit_message_reply_markup(
+                        chat_id=message.chat.id,
+                        message_id=button_message_id,
+                        reply_markup=InlineKeyboardMarkup(
+                            [[InlineKeyboardButton(f"🎯 طلب الحجم ~{size} MB استلم", callback_data="none")]]
+                        )
+                    )
+                except: pass
+
+                # تنفيذ الضغط
+                compression_executor.submit(process_video_for_compression, video_data)
+
+                # إعادة تهيئة user_states للسماح بمحاولة ثانية
+                user_states.pop(user_id, None)
+
             else:
-                message.reply_text("❌ أرقام مستبعدة، المرجو استخدام بين 0 و 51 فقط.", quote=True)
-        except ValueError:
-            message.reply_text("❌ إدخال غير صالح. المطلوب رقم.", quote=True)
-        finally:
-            try: message.delete()
-            except: pass
+                message.reply_text("❌ الفيديو ممسوح أو العملية قيد التنفيذ مسبقاً.", quote=True)
+        else:
+            message.reply_text("❌ بيانات الجلسة غير متوفرة. أرسل فيديو جديد.", quote=True)
 
+    except ValueError:
+        message.reply_text(
+            "❌ القيمة المُرسلة خاطئة، يرجى كتابة حجم الميغا رقمياً فقط (مثال: 5.5 أو 12).",
+            quote=True
+        )
+    finally:
+        try: message.delete()
+        except: pass
     elif state == "waiting_for_target_size":
         prompt_message_id = user_states[user_id].get("prompt_message_id")
         button_message_id = user_states[user_id].get("button_message_id")
@@ -531,11 +550,12 @@ def post_download_actions(original_message_id):
         if original_message_id in user_video_data: del user_video_data[original_message_id]
 
 @app.on_callback_query()
+@app.on_callback_query()
 def universal_callback_handler(client, callback_query):
     data = callback_query.data
     user_id = callback_query.from_user.id
     message = callback_query.message
-    
+
     # ---------------- إعدادات البوت ----------------
     if data.startswith("settings"):
         if data == "settings":
@@ -611,7 +631,8 @@ def universal_callback_handler(client, callback_query):
         # إرسال رسالة انتظار حجم جديد
         prompt_msg = message.reply_text(
             "🔢 رجاءً أرسل الحجم (المستهدف) رقماً بالميغا بايت في الدردشة الآن.\n"
-            "*(مثال: 5.5 أو 12)*", quote=True
+            "*(مثال: 5.5 أو 12)*",
+            quote=True
         )
 
         # تحديث حالة المستخدم لإعادة الطلب
@@ -621,9 +642,9 @@ def universal_callback_handler(client, callback_query):
             "button_message_id": button_message_id
         }
 
-        # إعادة تفعيل الزر في حال أراد المستخدم الضغط عليه مرة ثانية لاحقًا
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🎯 إرسال حجم آخر", callback_data="target_size_prompt")]])
+        # إعادة عرض الزر نفسه بحيث يمكن الضغط مرة أخرى لاحقًا
         try:
+            markup = InlineKeyboardMarkup([[InlineKeyboardButton("🎯 إرسال حجم آخر", callback_data="target_size_prompt")]])
             message.edit_reply_markup(reply_markup=markup)
         except: pass
 
@@ -637,7 +658,6 @@ def universal_callback_handler(client, callback_query):
     video_data['quality'] = data
     callback_query.answer("في المعالجة... يرجى التمهل")
     compression_executor.submit(process_video_for_compression, video_data)
-
 # -------------------------- التشغيل --------------------------
 if __name__ == "__main__":
     cleanup_downloads()
