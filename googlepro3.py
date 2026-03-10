@@ -41,41 +41,47 @@ def get_user_settings(user_id):
 
 def update_progress_msg(current, total, client, message, action, start_time):
     """
-    دالة موحدة لتحديث رسائل التقدم بأسلوب شريط بصري (للتنزيل والرفع والضغط) مع الطباعة في السيرفر
+    دالة موحدة لتحديث رسائل التقدم مع معالجة الأخطاء إذا كان الحجم الإجمالي غير معروف من سيرفر تيليجرام
     """
     now = time.time()
     msg_id = message.id
     
-    # تحديث الرسالة والطباعة كل 5 ثوانٍ فقط 
-    if msg_id in PROGRESS_TRACKER and (now - PROGRESS_TRACKER[msg_id]) < 5.0 and current < total:
+    # تحديد ما إذا كانت العملية انتهت أم لا
+    is_finished = (current >= total) if total > 0 else False
+    
+    # تحديث الرسالة والطباعة كل 5 ثوانٍ فقط (تخطينا مشكلة الصفر هنا)
+    if msg_id in PROGRESS_TRACKER and (now - PROGRESS_TRACKER[msg_id]) < 5.0 and not is_finished:
         return
 
     PROGRESS_TRACKER[msg_id] = now
     
     percent = (current * 100 / total) if total > 0 else 0
-    filled = int(percent / 10)
+    filled = int(percent / 10) if percent > 0 else 0
     if filled > 10: filled = 10
     bar = f"[{'█' * filled}{'░' * (10 - filled)}]"
     
+    # تجنب إظهار 0.00 MB إذا لم تكن البيانات متوفرة
     if "ضغط" in action:
         curr_val = f"{current:.1f} ثانية"
-        total_val = f"{total:.1f} ثانية"
+        total_val = f"{total:.1f} ثانية" if total > 0 else "??"
     else: 
         curr_val = f"{current / (1024 * 1024):.2f} MB"
-        total_val = f"{total / (1024 * 1024):.2f} MB"
+        total_val = f"{total / (1024 * 1024):.2f} MB" if total > 0 else "??"
 
     elapsed = now - start_time
     
-    # تعريف المتغيرات الافتراضية هنا لحل مشكلة عدم العثور عليها
     speed_text = ""
     console_speed = ""  
-    eta_text = "جاري الحساب..."
+    eta_text = "غير معروف" if total <= 0 else "جاري الحساب..."
     
     if elapsed > 0:
         speed = current / elapsed
         if speed > 0:
-            eta_seconds = (total - current) / speed
-            eta_text = f"{int(eta_seconds)} ثانية"
+            # نحسب الوقت المتبقي فقط إذا كنا نعرف الحجم الإجمالي
+            if total > 0:
+                eta_seconds = max(0, (total - current) / speed) # max(0) لتجنب الأرقام السالبة تماماً
+                eta_text = f"{int(eta_seconds)} ثانية"
+            
             if "ضغط" not in action:
                 speed_mb = speed / (1024 * 1024)
                 speed_text = f"🚀 **السرعة:** `{speed_mb:.2f} MB/s`\n"
