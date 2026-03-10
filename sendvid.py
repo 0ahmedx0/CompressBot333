@@ -252,7 +252,7 @@ def process_video_for_compression(video_data):
             f'-c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} '
             f'-ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -map_metadata -1'
         )
-        ffmpeg_command = f'{common_ffmpeg_part} {quality_settings} "{temp_compressed_filename}"'
+        ffmpeg_command = f'{common_ffmpeg_part} {quality_settings} -movflags +faststart "{temp_compressed_filename}"'
 
         progress_msg = message.reply_text("🔄 **بدأ ضغط الفيديو (قد يأخذ وقتاً)...**", quote=True)
         start_time = time.time()
@@ -304,7 +304,7 @@ def process_video_for_compression(video_data):
             width=vid_width,
             height=vid_height,
             thumb=thumb_path, 
-            supports_streaming=False 
+            supports_streaming=True 
         )
         
         try: upload_progress_msg.delete()
