@@ -62,7 +62,8 @@ def estimate_crf_for_target_size(file_path, target_size_mb, initial_crf=23):
     if original_size_mb > target_size_mb:
         ratio = original_size_mb / target_size_mb
         estimated_crf = min(51, max(18, initial_crf + int((ratio - 1) * 5)))
- ratio = target_size_mb / original_size_mb
+    else:
+        ratio = target_size_mb / original_size_mb
         estimated_crf = max(0, min(23, initial_crf - int((ratio - 1) * 5)))
     
     return estimated_crf
@@ -99,7 +100,7 @@ def process_video_for_compression(video_data):
     if button_message_id and button_message_id in user_video_data:
         user_video_data[button_message_id]['processing_started'] = True
         try:
-           الة بناءً على نوع الضغط
+            # تحديث الرسالة بناءً على نوع الضغط
             if isinstance(quality, dict) and 'target_size' in quality:
                 status_text = f"⏳ جاري الضغط للوصول لحجم ~{quality['target_size']} ميجابايت..."
             else:
@@ -148,7 +149,9 @@ def process_video_for_compression(video_data):
                 return
     
         # الخطوة 2: تحديد الإعداد المسبق بناءً على القيمة الرقمية ونوع المرمز
-        preset = "fast" # قيمة افتراضية آمنة تعمل على quality_value <= 18:
+        preset = "fast" # قيمة افتراضية آمنة تعمل على الجميع
+        
+        if quality_value <= 18:
             preset = "slow"
         elif quality_value <= 23:
             preset = "medium"
@@ -504,10 +507,7 @@ def post_download_actions(original_message_id):
         
         # حذف رسالة تقدم التنزيل
         try:
-            # نحتاج إلى الوصول إلى معرف الرسالة من مكان آخر، لأن الدالة قد تنتهي قبل أن تنتهي الخيوط الأخرى
-            # الطريقة الأفضل هي تخزين معرف الرسالة في قاموس بيانات الفيديو
-            # هذا يتطلب تعديلًا طفيفًا في handle_incoming_video
-            pass # تم التعامل معه في handle_incoming_video
+            handle_incoming_video._dl_progress_msg.delete()
         except:
             pass # إذا لم توجد الرسالة أو تم حذفها مسبقًا
 
@@ -534,7 +534,7 @@ def post_download_actions(original_message_id):
             user_video_data[reply_message.id]['timer'] = timer
             timer.start()
     except Exception as e:
-        print(f"[{thread_name}] Error during post-download actions for original message ID {original_message_id}: {e}")
+        print(f"[{thread_name}] Error during post-download actions fororiginal_message_id}: {e}")
         message.reply_text(f"حدث خطأ أثناء تنزيل الفيديو: `{e}`")
         if original_message_id in user_video_data: del user_video_data[original_message_id]
 
