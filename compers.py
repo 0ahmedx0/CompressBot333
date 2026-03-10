@@ -24,15 +24,15 @@ compression_executor = ThreadPoolExecutor(max_workers=3)
 user_states = {}
 user_settings = {}
 user_video_data = {}
-PROGRESS_TRACKER = {} 
+PROGRESS_TRACKER = {} # لتتبع وقت آخر تحديث لرسائل التقدم (تجنب الحظر FloodWait)
 
-# تحديث الإعدادات الافتراضية لدعم النسبة المئوية التلقائية
+# الإعدادات الافتراضية - تم إضافة خيار نمط التلقائي والنسبة التلقائية
 DEFAULT_SETTINGS = {
     'encoder': 'h264_nvenc',
     'auto_compress': False,
-    'auto_mode': 'percentage', # الخيار الجديد: 'percentage' أو 'quality'
-    'auto_quality_value': 23,
-    'auto_percent_value': 50   # النسبة الافتراضية 50%
+    'auto_compress_type': 'crf', # 'crf' or 'percent'
+    'auto_quality_value': 30,
+    'auto_percent_value': 50 # النسبة الافتراضية هي 50%
 }
 
 def get_user_settings(user_id):
@@ -40,288 +40,523 @@ def get_user_settings(user_id):
         user_settings[user_id] = DEFAULT_SETTINGS.copy()
     return user_settings[user_id]
 
-# -------------------------- وظائف المساعدة والتقدم --------------------------
+# -------------------------- وظائف المساعدة وحساب الحجم والتقدم --------------------------
 
 def update_progress_msg(current, total, client, message, action, start_time, known_size=0):
+    """
+    دالة موحدة لتحديث رسائل التقدم مع استخدام حجم احتياطي مؤكد لضمان دقة الحسابات
+    """
     now = time.time()
     msg_id = message.id
-    if total <= 0 and known_size > 0: total = known_size
-    is_finished = (current >= total) if total > 0 else False
-    if msg_id in PROGRESS_TRACKER and (now - PROGRESS_TRACKER[msg_id]) < 5.0 and not is_finished: return
-    PROGRESS_TRACKER[msg_id] = now
-    percent = (current * 100 / total) if total > 0 else 0
-    filled = int(percent / 10)
-    bar = f"[{'█' * filled}{'░' * (10 - filled)}]"
-    if "ضغط" in action:
-        curr_val, total_val = f"{current:.1f}s", f"{total:.1f}s"
-    else: 
-        curr_val, total_val = f"{current/(1024*1024):.2f}MB", f"{total/(1024*1024):.2f}MB"
     
-    elapsed = now - start_time
-    speed_text = ""
-    if elapsed > 0 and "ضغط" not in action:
-        speed_mb = (current / elapsed) / (1024 * 1024)
-        speed_text = f"🚀 **السرعة:** `{speed_mb:.2f} MB/s`\n"
+    if total <= 0 and known_size > 0:
+        total = known_size
 
-    text = f"{action}\n{bar} `{percent:.1f}%`\n📊 **التقدم:** `{curr_val} / {total_val}`\n{speed_text}"
-    try: client.edit_message_text(chat_id=message.chat.id, message_id=message.id, text=text)
-    except: pass
+    is_finished = (current >= total) if total > 0 else False
+    
+    if msg_id in PROGRESS_TRACKER and (now - PROGRESS_TRACKER[msg_id]) < 5.0 and not is_finished:
+        return
+
+    PROGRESS_TRACKER[msg_id] = now
+    
+    percent = (current * 100 / total) if total > 0 else 0
+    filled = int(percent / 10) if percent > 0 else 0
+    if filled > 10: filled = 10
+    bar = f"[{'█' * filled}{'░' * (10 - filled)}]"
+    
+    if "ضغط" in action:
+        curr_val = f"{current:.1f} ثانية"
+        total_val = f"{total:.1f} ثانية" if total > 0 else "??"
+    else: 
+        curr_val = f"{current / (1024 * 1024):.2f} MB"
+        total_val = f"{total / (1024 * 1024):.2f} MB" if total > 0 else "??"
+
+    elapsed = now - start_time
+    
+    speed_text = ""
+    console_speed = ""  
+    eta_text = "غير معروف" if total <= 0 else "جاري الحساب..."
+    
+    if elapsed > 0:
+        speed = current / elapsed
+        if speed > 0:
+            if total > 0:
+                eta_seconds = max(0, (total - current) / speed)
+                eta_text = f"{int(eta_seconds)} ثانية"
+            
+            if "ضغط" not in action:
+                speed_mb = speed / (1024 * 1024)
+                speed_text = f"🚀 **السرعة:** `{speed_mb:.2f} MB/s`\n"
+                console_speed = f"| السرعة: {speed_mb:.2f} MB/s "
+
+    text = (
+        f"{action}\n"
+        f"{bar} `{percent:.1f}%`\n"
+        f"📊 **التقدم:** `{curr_val} / {total_val}`\n"
+        f"{speed_text}"
+        f"⏱ **الوقت المتبقي:** `{eta_text}`"
+    )
+
+    clean_action = action.replace('*', '').replace('`', '').split('\n')[0].strip()
+    console_log = f"[Task Msg:{msg_id}] {clean_action} | {percent:.1f}% | {curr_val} / {total_val} {console_speed}| المتبقي: {eta_text}"
+    print(console_log)
+    
+    try:
+        client.edit_message_text(chat_id=message.chat.id, message_id=message.id, text=text)
+    except FloodWait as e:
+        time.sleep(e.value)
+    except MessageNotModified:
+        pass
+    except Exception:
+        pass
         
 def get_video_info_and_thumb(file_path):
-    duration, width, height, thumb_path = 0.0, 0, 0, None
+    """
+    تستخرج المدة والأبعاد من الفيديو وتلتقط صورة مصغرة (Thumbnail) لتستخدمها تيليجرام
+    """
+    duration = 0.0
+    width = 0
+    height = 0
+    thumb_path = None
+
     try:
         cmd = f'ffprobe -v quiet -print_format json -show_streams "{file_path}"'
-        data = json.loads(subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout)
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        data = json.loads(result.stdout)
+        
         for stream in data.get('streams', []):
             if stream.get('codec_type') == 'video':
-                width, height, duration = int(stream.get('width')), int(stream.get('height')), float(stream.get('duration'))
+                width = int(stream.get('width', 0))
+                height = int(stream.get('height', 0))
+                duration = float(stream.get('duration', 0))
                 break
+        
+        thumb_time = min(1.0, duration * 0.1) if duration > 0 else 1.0
         thumb_path = file_path + "_thumb.jpg"
-        subprocess.run(f'ffmpeg -y -ss {min(1.0, duration*0.1)} -i "{file_path}" -vframes 1 -vf "scale=320:-1" "{thumb_path}" -loglevel quiet', shell=True)
-    except: pass
+        
+        thumb_cmd = f'ffmpeg -y -ss {thumb_time} -i "{file_path}" -vframes 1 -vf "scale=320:-1" -q:v 5 "{thumb_path}" -loglevel quiet'
+        subprocess.run(thumb_cmd, shell=True)
+        
+        if not os.path.exists(thumb_path):
+            thumb_path = None
+            
+    except Exception as e:
+        print(f"Error getting video info & thumb: {e}")
+        
     return thumb_path, duration, width, height
 
 def time_to_seconds(time_str):
     try:
         h, m, s = time_str.split(':')
         return int(h) * 3600 + int(m) * 60 + float(s)
-    except: return 0
+    except:
+        return 0
+
+def get_telegram_duration(message):
+    if message.video and message.video.duration:
+        return float(message.video.duration)
+    elif message.animation and message.animation.duration:
+        return float(message.animation.duration)
+    return 0
+
+def get_video_duration(file_path):
+    try:
+        cmd = f'ffprobe -v quiet -print_format json -show_format "{file_path}"'
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        data = json.loads(result.stdout)
+        return float(data['format']['duration'])
+    except:
+        return 0
 
 def calculate_target_bitrate(target_size_mb, duration_seconds, audio_bitrate_kbps=128):
-    if duration_seconds <= 0: return 500
+    if duration_seconds <= 0:
+        return 500
     total_bitrate_kbps = (target_size_mb * 8192) / duration_seconds
-    return max(50, int(total_bitrate_kbps - audio_bitrate_kbps))
+    video_bitrate_kbps = int(total_bitrate_kbps - audio_bitrate_kbps)
+    return max(50, video_bitrate_kbps)
 
 def cleanup_downloads():
-    for f in os.listdir(DOWNLOADS_DIR):
-        try: os.remove(os.path.join(DOWNLOADS_DIR, f))
-        except: pass
+    print("Cleaning up downloads directory...")
+    for filename in os.listdir(DOWNLOADS_DIR):
+        file_path = os.path.join(DOWNLOADS_DIR, filename)
+        try:
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                print(f"Deleted old file: {file_path}")
+        except Exception:
+            pass
 
-# -------------------------- محرك الضغط الأساسي --------------------------
+# -------------------------- تهيئة العميل --------------------------
+app = Client("video_compressor_bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
+
+# -------------------------- وظائف المعالجة الأساسية --------------------------
 
 def process_video_for_compression(video_data):
-    file_path, message = video_data['file'], video_data['message']
-    quality, user_id = video_data['quality'], video_data['user_id']
-    button_msg_id = video_data.get('button_message_id')
-    encoder = get_user_settings(user_id)['encoder']
-    
-    # تحديد مدة الفيديو بدقة للـ Bitrate
+    thread_name = threading.current_thread().name
+    file_path = video_data['file']
+    message = video_data['message']
+    button_message_id = video_data.get('button_message_id')
+    quality = video_data['quality']
+    user_id = video_data['user_id']
+    user_prefs = get_user_settings(user_id)
+    encoder = user_prefs['encoder']
+
     total_duration = get_telegram_duration(message)
     if total_duration <= 0:
-        total_duration = float(subprocess.run(f'ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{file_path}"', shell=True, capture_output=True, text=True).stdout or 0)
+        total_duration = get_video_duration(file_path)
 
-    if button_msg_id:
-        user_video_data[button_msg_id]['processing_started'] = True
-        try: app.edit_message_reply_markup(message.chat.id, button_msg_id, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏳ جاري المعالجة...", callback_data="none")]]))
+    print(f"\n[{thread_name}] Original file: {os.path.basename(file_path)} | Size: {os.path.getsize(file_path)/(1024*1024):.2f}MB | Duration: {total_duration}s")
+
+    if button_message_id and button_message_id in user_video_data:
+        user_video_data[button_message_id]['processing_started'] = True
+        try:
+            status_text = f"⏳ تم وضع الفيديو في طابور المعالجة..."
+            app.edit_message_reply_markup(
+                chat_id=message.chat.id,
+                message_id=button_message_id,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(status_text, callback_data="none")]])
+            )
         except: pass
 
-    temp_out = None
+    temp_compressed_filename = None
+    thumb_path = None
+
     try:
-        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir=DOWNLOADS_DIR) as tf: temp_out = tf.name
+        if not os.path.exists(file_path):
+            message.reply_text("❌ حدث خطأ: لم يتم العثور على الملف الأصلي للمعالجة.")
+            return
 
-        # حالة الحجم المستهدف (سواء MB يدوي أو محسوب من نسبة تلقائية)
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir=DOWNLOADS_DIR) as temp_file:
+            temp_compressed_filename = temp_file.name
+
         if isinstance(quality, dict) and 'target_size' in quality:
-            target_mb = quality['target_size']
-            target_v_bitrate = calculate_target_bitrate(target_mb, total_duration)
-            q_args = f"-b:v {target_v_bitrate}k -maxrate {target_v_bitrate}k -bufsize {target_v_bitrate*2}k -preset fast"
-            mode_text = f"🎯 الهدف: {target_mb:.2f} MB"
+            target_size_mb = quality['target_size']
+            try: audio_k = int(str(VIDEO_AUDIO_BITRATE).lower().replace('k', '').strip())
+            except: audio_k = 128
+            target_v_bitrate = calculate_target_bitrate(target_size_mb, total_duration, audio_k)
+            print(f"[{thread_name}] Mode: EXACT SIZE. Target: {target_size_mb} MB | Target Video Bitrate: {target_v_bitrate}k")
+            quality_settings = f"-b:v {target_v_bitrate}k -maxrate {target_v_bitrate}k -bufsize {target_v_bitrate*2}k -preset fast"
+            used_mode_text = f"🎯 طلب حجم مستهدف: ~{target_size_mb:.2f} MB"
         else:
-            q_val = int(quality.split('_')[1]) if 'crf_' in str(quality) else int(quality)
-            q_param = "cq" if "nvenc" in encoder else "crf"
-            q_args = f"-{q_param} {q_val} -preset fast"
-            mode_text = f"🎥 جودة CRF: {q_val}"
-
-        cmd = f'ffmpeg -y -i "{file_path}" -c:v {encoder} -pix_fmt yuv420p -c:a aac -b:a 128k {q_args} -movflags +faststart "{temp_out}"'
+            quality_value = int(quality.split('_')[1]) if isinstance(quality, str) and 'crf_' in quality else int(quality)
+            print(f"[{thread_name}] Mode: QUALITY (CRF/CQ). Level: {quality_value}")
+            preset = "fast"
+            if quality_value <= 18: preset = "slow"
+            elif quality_value <= 23: preset = "medium"
+            elif quality_value >= 27: preset = "veryfast" if encoder == 'libx264' else "fast"
+            quality_param = "cq" if "nvenc" in encoder else "crf"
+            quality_settings = f"-{quality_param} {quality_value} -preset {preset}"
+            used_mode_text = f"🎥 الجودة (CRF/CQ): {quality_value}"
         
-        prog = message.reply_text("🔄 **جاري الضغط الآن...**", quote=True)
-        start = time.time()
-        process = subprocess.Popen(cmd, shell=True, stderr=subprocess.PIPE, universal_newlines=True, encoding='utf-8')
-        
-        for line in process.stderr:
-            tm = re.search(r"time=\s*(\d{2}:\d{2}:\d{2}\.\d+)", line)
-            if tm: update_progress_msg(time_to_seconds(tm.group(1)), total_duration, app, prog, "⚙️ **معالجة FFmpeg...**", start)
-        process.wait()
-        try: prog.delete()
-        except: pass
-
-        # الرفع النهائي
-        thumb, dur, w, h = get_video_info_and_thumb(temp_out)
-        up_prog = message.reply_text("📤 **جاري الرفع...**", quote=True)
-        message.reply_video(
-            video=temp_out, duration=int(dur), width=w, height=h, thumb=thumb, supports_streaming=True,
-            progress=update_progress_msg, progress_args=(app, up_prog, "📤 **رفع الفيديو...**", time.time()),
-            caption=f"📦 **اكتمل الضغط**\n🔻 قبل: {os.path.getsize(file_path)/(1024*1024):.2f} MB\n✅ بعد: {os.path.getsize(temp_out)/(1024*1024):.2f} MB\n{mode_text}"
+        common_ffmpeg_part = (
+            f'ffmpeg -y -i "{file_path}" -c:v {encoder} -pix_fmt {VIDEO_PIXEL_FORMAT} '
+            f'-c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} '
+            f'-ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -map_metadata -1'
         )
-        try: up_prog.delete()
+        ffmpeg_command = f'{common_ffmpeg_part} {quality_settings} -movflags +faststart "{temp_compressed_filename}"'
+
+        progress_msg = message.reply_text("🔄 **بدأ ضغط الفيديو (قد يأخذ وقتاً)...**", quote=True)
+        start_time = time.time()
+
+        process = subprocess.Popen(ffmpeg_command, shell=True, stderr=subprocess.PIPE, universal_newlines=True, encoding='utf-8')
+
+        for line in process.stderr:
+            if total_duration > 0:
+                time_match = re.search(r"time=\s*(\d{2}:\d{2}:\d{2}\.\d+)", line)
+                if time_match:
+                    current_time_str = time_match.group(1)
+                    current_time_sec = time_to_seconds(current_time_str)
+                    update_progress_msg(
+                        current=current_time_sec,
+                        total=total_duration,
+                        client=app,
+                        message=progress_msg,
+                        action="⚙️ **جاري المعالجة والضغط...**",
+                        start_time=start_time
+                    )
+
+        process.wait()
+        
+        if process.returncode != 0:
+            raise Exception("FFmpeg process crashed or failed.")
+            
+        try: progress_msg.delete()
+        except: pass
+
+        compressed_file_size_mb = os.path.getsize(temp_compressed_filename) / (1024 * 1024)
+        print(f"[{thread_name}] Compression Done! New Size: {compressed_file_size_mb:.2f} MB")
+
+        upload_progress_msg = message.reply_text("📤 اكتمل الضغط! بدأ الرفع النهائي كفيديو...", quote=True)
+        upload_start_time = time.time()
+
+        thumb_path, vid_duration, vid_width, vid_height = get_video_info_and_thumb(temp_compressed_filename)
+
+        message.reply_video(
+            video=temp_compressed_filename,
+            progress=update_progress_msg,
+            progress_args=(app, upload_progress_msg, "📤 **الرفع إلى التليجرام...**", upload_start_time),
+            caption=f"📦 **النتيجة النهائية**\n"
+                    f"🔻 الحجم القديم: {os.path.getsize(file_path) / (1024 * 1024):.2f} MB\n"
+                    f"✅ الحجم الجديد: {compressed_file_size_mb:.2f} MB\n\n"
+                    f"{used_mode_text}",
+            duration=int(vid_duration),
+            width=vid_width,
+            height=vid_height,
+            thumb=thumb_path, 
+            supports_streaming=True 
+        )
+        
+        try: upload_progress_msg.delete()
         except: pass
         
-    except Exception as e: message.reply_text(f"❌ خطأ: {e}")
+    except Exception as e:
+        print(f"[{thread_name}] Processing error: {e}")
+        message.reply_text(f"❌ حدث خطأ أثناء المعالجة أو الرفع:\n`{str(e)[:150]}`", quote=True)
     finally:
-        if temp_out and os.path.exists(temp_out): os.remove(temp_out)
-        if button_msg_id in user_video_data: 
-            user_video_data[button_msg_id]['processing_started'] = False
-            # زر الإنهاء التلقائي بعد النجاح
-            try: app.edit_message_text(message.chat.id, button_msg_id, "✅ اكتملت العملية. هل تريد شيئاً آخر؟", 
-                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ حذف الأصلي والإنهاء", callback_data="finish_process")]]))
+        if temp_compressed_filename and os.path.exists(temp_compressed_filename):
+            os.remove(temp_compressed_filename)
+        if thumb_path and os.path.exists(thumb_path):
+            os.remove(thumb_path)
+
+        auto_compress_status_message_id = video_data.get('auto_compress_status_message_id')
+        if auto_compress_status_message_id:
+            try: app.delete_messages(chat_id=message.chat.id, message_ids=auto_compress_status_message_id)
             except: pass
 
-# -------------------------- التعامل مع الرسائل --------------------------
+        if button_message_id and button_message_id in user_video_data:
+            user_video_data[button_message_id]['processing_started'] = False
+            user_video_data[button_message_id]['quality'] = None
+            try:
+                # تحديث الأزرار لتشمل ميزة النسبة أيضاً عند الطلب اليدوي اللاحق
+                markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("ضعيفة (CRF 27)", callback_data="crf_27"),
+                     InlineKeyboardButton("متوسطة (CRF 23)", callback_data="crf_23"),
+                     InlineKeyboardButton("عالية (CRF 18)", callback_data="crf_18")],
+                    [InlineKeyboardButton("🎯 حجم (MB)", callback_data="target_size_prompt"),
+                     InlineKeyboardButton("📉 نسبة (%)", callback_data="target_percent_prompt")],
+                    [InlineKeyboardButton("❌ إنهاء العملية", callback_data="finish_process")]
+                ])
+                app.edit_message_text(
+                    chat_id=message.chat.id, message_id=button_message_id,
+                    text="✅ تمت المهمة بنجاح! يمكنك تجربة جودة أخرى أو حجم آخر، أو إنهاء العملية لحذف الملف الأصلي:",
+                    reply_markup=markup)
+            except: pass
 
-app = Client("vid_compressor", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
+def auto_select_medium_quality(button_message_id):
+    if button_message_id in user_video_data:
+        video_data = user_video_data[button_message_id]
+        if not video_data.get('processing_started'):
+            video_data['quality'] = "crf_23"
+            try:
+                app.edit_message_reply_markup(
+                    chat_id=video_data['message'].chat.id, message_id=button_message_id,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ تم تفعيل اختيار (متوسط) لانتهاء الوقت", callback_data="none")]]))
+            except Exception: pass
+            compression_executor.submit(process_video_for_compression, video_data)
+
+# -------------------------- معالجات رسائل تيليجرام --------------------------
 
 @app.on_message(filters.command("start"))
-def start(c, m):
-    m.reply_text("أهلاً بك! أرسل الفيديو وسأقوم بضغطه تلقائياً أو يدوياً.\nاستخدم /settings لضبط النسبة المئوية التلقائية.",
-                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ الإعدادات", callback_data="settings")]]))
+def start_command(client, message):
+    settings_button = InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ الإعدادات", callback_data="settings")]])
+    message.reply_text(
+        "👋 أهلاً بك! أرسل لي فيديو وسأقوم بضغطه.\n\nتتوفر ميزات: CRF، الحجم المحدد (MB)، والضغط بالنسبة المئوية (%) من الأصل.",
+        reply_markup=settings_button, quote=True
+    )
 
 @app.on_message(filters.command("settings"))
-def settings_cmd(c, m):
-    send_settings_menu(c, m.chat.id, m.from_user.id)
+def settings_command(client, message):
+    send_settings_menu(client, message.chat.id, message.from_user.id)
+
+@app.on_message(filters.text)
+def handle_text_inputs(client, message):
+    user_id = message.from_user.id
+    if user_id not in user_states:
+        return
+        
+    state_data = user_states[user_id]
+    state = state_data.get("state")
+    
+    # ميزة ضغط حجم محدد يدوي
+    if state == "waiting_for_target_size":
+        button_message_id = state_data.get("button_message_id")
+        try:
+            size = float(message.text)
+            if size <= 0: raise ValueError
+            if button_message_id in user_video_data:
+                video_data = user_video_data[button_message_id]
+                video_data['quality'] = {"target_size": size}
+                compression_executor.submit(process_video_for_compression, video_data)
+                del user_states[user_id]
+        except: message.reply_text("❌ أرسل رقماً صحيحاً.")
+
+    # ميزة النسبة المئوية اليدوية (المطلوبة)
+    elif state == "waiting_for_manual_percent":
+        button_message_id = state_data.get("button_message_id")
+        try:
+            pct = float(message.text)
+            if not (1 <= pct <= 100): raise ValueError
+            if button_message_id in user_video_data:
+                video_data = user_video_data[button_message_id]
+                orig_size_mb = os.path.getsize(video_data['file']) / (1024*1024)
+                target_mb = (pct / 100) * orig_size_mb
+                video_data['quality'] = {"target_size": target_mb}
+                compression_executor.submit(process_video_for_compression, video_data)
+                del user_states[user_id]
+        except: message.reply_text("❌ أرسل رقم بين 1 و 100.")
+
+    # ضبط قيمة النسبة للتلقائي
+    elif state == "waiting_for_auto_percent_value":
+        try:
+            val = float(message.text)
+            if 1 <= val <= 100:
+                get_user_settings(user_id)['auto_percent_value'] = val
+                message.reply_text(f"✅ تم حفظ النسبة التلقائية: {val}%")
+                del user_states[user_id]
+                send_settings_menu(client, message.chat.id, user_id)
+        except: message.reply_text("❌ أرسل رقماً.")
+
+    elif state == "waiting_for_cq_value":
+        try:
+            val = int(message.text)
+            if 0 <= val <= 51:
+                get_user_settings(user_id)['auto_quality_value'] = val
+                user_states.pop(user_id, None)
+                send_settings_menu(client, message.chat.id, user_id)
+        except: pass
 
 def send_settings_menu(client, chat_id, user_id, message_id=None):
     s = get_user_settings(user_id)
-    mode_display = "نسبة مئوية %" if s['auto_mode'] == 'percentage' else "جودة CRF"
-    auto_status = "✅ مفعّل" if s['auto_compress'] else "❌ معطّل"
+    auto_comp = "✅ مفعل" if s['auto_compress'] else "❌ معطل"
+    mode_text = "نسبة مئوية %" if s['auto_compress_type'] == 'percent' else "جودة CRF"
     
     text = (
-        "**⚙️ إعدادات الضغط التلقائي:**\n\n"
-        f"🔸 الحالة: **{auto_status}**\n"
-        f"🔸 نوع الضغط التلقائي: **{mode_display}**\n"
-        f"🔸 النسبة المحفوظة: **{s['auto_percent_value']}%**\n"
-        f"🔸 جودة CRF المحفوظة: **{s['auto_quality_value']}**\n"
-        f"🔸 المُسرع الحالي: `{s['encoder']}`"
+        "**⚙️ قائمة الإعدادات:**\n\n"
+        f"🔹 الترميز: `{s['encoder']}`\n"
+        f"🔸 الضغط التلقائي: `{auto_comp}`\n"
+        f"📊 وضع التلقائي: `{mode_text}`\n"
+        f"📈 النسبة التلقائية: `{s['auto_percent_value']}%` | جودة: `{s['auto_quality_value']}`"
     )
-    kb = [
-        [InlineKeyboardButton(f"تغيير الوضع التلقائي لـ: {'CRF' if s['auto_mode']=='percentage' else 'نسبة %'}", callback_data="toggle_auto_mode")],
-        [InlineKeyboardButton("✏️ ضبط (النسبة %) التلقائية", callback_data="set_auto_pct"),
-         InlineKeyboardButton("✏️ ضبط (الـ CRF) التلقائي", callback_data="set_auto_crf")],
-        [InlineKeyboardButton(f"الضغط التلقائي: {auto_status}", callback_data="toggle_auto_status")],
-        [InlineKeyboardButton("🔄 تغيير المُسرع", callback_data="settings_encoder")],
+    keyboard = [
+        [InlineKeyboardButton("🔄 تغيير المحرك", callback_data="settings_encoder")],
+        [InlineKeyboardButton(f"تغيير وضع التلقائي إلى: {'CRF' if s['auto_compress_type']=='percent' else 'نسبة %'}", callback_data="settings_toggle_mode")],
+        [InlineKeyboardButton("📉 ضبط (النسبة %) للتلقائي", callback_data="settings_set_auto_percent")],
+        [InlineKeyboardButton("✏️ ضبط (CRF) للتلقائي", callback_data="settings_custom_quality")],
+        [InlineKeyboardButton(f"الضغط التلقائي: {auto_comp}", callback_data="settings_toggle_auto")],
         [InlineKeyboardButton("✖️ إغلاق", callback_data="close_settings")]
     ]
-    if message_id: client.edit_message_text(chat_id, message_id, text, reply_markup=InlineKeyboardMarkup(kb))
-    else: client.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(kb))
 
-@app.on_message(filters.text)
-def handle_text(c, m):
-    uid = m.from_user.id
-    if uid not in user_states: return
-    state_data = user_states[uid]
-    state = state_data.get("state")
-
-    # 1. إدخال النسبة المئوية للإعدادات (التلقائية)
-    if state == "waiting_for_auto_pct_value":
-        try:
-            val = float(m.text)
-            if 1 <= val <= 100:
-                get_user_settings(uid)['auto_percent_value'] = val
-                m.reply_text(f"✅ تم حفظ النسبة التلقائية: {val}%")
-                user_states.pop(uid)
-                send_settings_menu(c, m.chat.id, uid)
-            else: m.reply_text("أرسل رقم من 1 لـ 100.")
-        except: m.reply_text("أرسل رقماً صحيحاً.")
-
-    # 2. إدخال نسبة مئوية لفيديو محدد (يدوي)
-    elif state == "waiting_for_manual_pct":
-        try:
-            pct = float(m.text)
-            bid = state_data['button_message_id']
-            if bid in user_video_data:
-                vd = user_video_data[bid]
-                orig_mb = os.path.getsize(vd['file']) / (1024*1024)
-                target = (pct/100) * orig_mb
-                vd['quality'] = {"target_size": target}
-                compression_executor.submit(process_video_for_compression, vd)
-                user_states.pop(uid)
-        except: m.reply_text("خطأ في الرقم.")
-
-    # 3. إدخال حجم MB محدد (يدوي)
-    elif state == "waiting_for_target_mb":
-        try:
-            mb = float(m.text)
-            bid = state_data['button_message_id']
-            if bid in user_video_data:
-                user_video_data[bid]['quality'] = {"target_size": mb}
-                compression_executor.submit(process_video_for_compression, user_video_data[bid])
-                user_states.pop(uid)
-        except: m.reply_text("أرسل رقم الميجا بايت.")
+    if message_id:
+        try: client.edit_message_text(chat_id, message_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
+        except: pass
+    else:
+        client.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 @app.on_message(filters.video | filters.animation)
-def handle_video(c, m):
-    d_msg = m.reply_text("📥 جاري التحميل...", quote=True)
-    f_path = c.download_media(m, progress=update_progress_msg, progress_args=(c, d_msg, "📥 تحميل...", time.time()))
-    try: d_msg.delete()
+def handle_incoming_video(client, message):
+    file_id = message.video.file_id if message.video else message.animation.file_id
+    file_size = message.video.file_size if message.video else message.animation.file_size
+    file_name_prefix = os.path.join(DOWNLOADS_DIR, f"{message.from_user.id}_{message.id}_{int(time.time())}.mp4")
+    
+    download_msg = message.reply_text("📥 جاري تنزيل الملف...", quote=True)
+    start_time = time.time()
+    
+    download_future = download_executor.submit(
+        client.download_media,
+        message=file_id,
+        file_name=file_name_prefix,
+        progress=update_progress_msg,
+        progress_args=(client, download_msg, "📥 **جاري التنزيل...**", start_time, file_size)
+    )
+
+    user_video_data[message.id] = {
+        'message': message, 'download_msg': download_msg, 'download_future': download_future,
+        'file': None, 'button_message_id': None, 'timer': None, 'quality': None,
+        'processing_started': False, 'user_id': message.from_user.id, 'auto_compress_status_message_id': None 
+    }    
+    threading.Thread(target=post_download_actions, args=[message.id]).start()
+    
+def post_download_actions(original_message_id):
+    video_data = user_video_data[original_message_id]
+    message, user_id = video_data['message'], video_data['user_id']
+    try:
+        file_path = video_data['download_future'].result()
+        video_data['file'] = file_path
+        try: video_data['download_msg'].delete()
+        except: pass
+        
+        s = get_user_settings(user_id)
+        if s['auto_compress']:
+            # إذا كان الضغط تلقائي بالنسبة المئوية
+            if s['auto_compress_type'] == 'percent':
+                orig_mb = os.path.getsize(file_path) / (1024*1024)
+                target_mb = (s['auto_percent_value'] / 100) * orig_mb
+                video_data['quality'] = {"target_size": target_mb}
+            else:
+                video_data['quality'] = s['auto_quality_value']
+            
+            status_msg = message.reply_text("🚀 تم اكتشاف وضع التلقائي، جاري المعالجة...")
+            video_data['auto_compress_status_message_id'] = status_msg.id
+            compression_executor.submit(process_video_for_compression, video_data)
+        else:
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("أدنى (27)", callback_data="crf_27"),
+                 InlineKeyboardButton("متوسط (23)", callback_data="crf_23"),
+                 InlineKeyboardButton("عالي (18)", callback_data="crf_18")],
+                [InlineKeyboardButton("🎯 حجم (MB)", callback_data="target_size_prompt"),
+                 InlineKeyboardButton("📉 نسبة (%) من الأصل", callback_data="target_percent_prompt")],
+                [InlineKeyboardButton("❌ إلغاء", callback_data="cancel_compression")]
+            ])
+            reply_message = message.reply_text("✅ استُلم الملف. اختر طريقة الضغط:", reply_markup=markup, quote=True)
+            video_data['button_message_id'] = reply_message.id
+            user_video_data[reply_message.id] = user_video_data.pop(original_message_id)
+            timer = threading.Timer(300, auto_select_medium_quality, args=[reply_message.id])
+            video_data['timer'] = timer
+            timer.start()
     except: pass
 
-    uid = m.from_user.id
-    s = get_user_settings(uid)
-    
-    # تحضير بيانات الفيديو
-    video_entry = {'message': m, 'file': f_path, 'user_id': uid, 'processing_started': False}
-    
-    # فحص الضغط التلقائي
-    if s['auto_compress']:
-        if s['auto_mode'] == 'percentage':
-            orig_size = os.path.getsize(f_path) / (1024*1024)
-            target = (s['auto_percent_value'] / 100) * orig_size
-            video_entry['quality'] = {"target_size": target}
-        else:
-            video_entry['quality'] = s['auto_quality_value']
-        
-        m.reply_text(f"🚀 تم اكتشاف وضع الضغط التلقائي ({s['auto_mode']}). جاري التنفيذ...")
-        compression_executor.submit(process_video_for_compression, video_entry)
-    else:
-        # الوضع اليدوي
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("CRF 27 (ضعيفة)", callback_data="crf_27"),
-             InlineKeyboardButton("CRF 23 (متوسط)", callback_data="crf_23")],
-            [InlineKeyboardButton("🎯 حجم (MB) محدد", callback_data="manual_mb"),
-             InlineKeyboardButton("📉 نسبة (%) من الأصل", callback_data="manual_pct")],
-            [InlineKeyboardButton("❌ إلغاء", callback_data="cancel_process")]
-        ])
-        rep = m.reply_text("✅ تم التحميل. اختر طريقة الضغط:", reply_markup=kb, quote=True)
-        video_entry['button_message_id'] = rep.id
-        user_video_data[rep.id] = video_entry
-
 @app.on_callback_query()
-def cb_handler(c, q):
-    data, uid, msg = q.data, q.from_user.id, q.message
-    s = get_user_settings(uid)
+def universal_callback_handler(client, callback_query):
+    data, user_id, message = callback_query.data, callback_query.from_user.id, callback_query.message
+    s = get_user_settings(user_id)
 
-    if data == "settings": send_settings_menu(c, msg.chat.id, uid, msg.id)
-    elif data == "toggle_auto_status":
+    if data == "settings": send_settings_menu(client, message.chat.id, user_id, message.id)
+    elif data == "settings_toggle_mode":
+        s['auto_compress_type'] = 'percent' if s['auto_compress_type'] == 'crf' else 'crf'
+        send_settings_menu(client, message.chat.id, user_id, message.id)
+    elif data == "settings_set_auto_percent":
+        user_states[user_id] = {"state": "waiting_for_auto_percent_value"}
+        message.reply_text("🔢 أرسل رقم النسبة (1-100)% التي تريد اعتمادها لكل فيديوهاتك تلقائياً:")
+    elif data == "settings_toggle_auto":
         s['auto_compress'] = not s['auto_compress']
-        send_settings_menu(c, msg.chat.id, uid, msg.id)
-    elif data == "toggle_auto_mode":
-        s['auto_mode'] = 'quality' if s['auto_mode'] == 'percentage' else 'percentage'
-        send_settings_menu(c, msg.chat.id, uid, msg.id)
-    elif data == "set_auto_pct":
-        user_states[uid] = {"state": "waiting_for_auto_pct_value"}
-        msg.reply_text("🔢 أرسل النسبة المئوية الافتراضية (مثلاً 50):")
-    elif data == "close_settings": msg.delete()
-    
-    # الأزرار اليدوية على الفيديو
-    elif data == "manual_pct":
-        user_states[uid] = {"state": "waiting_for_manual_pct", "button_message_id": msg.id}
-        q.answer("أرسل النسبة المئوية %")
-    elif data == "manual_mb":
-        user_states[uid] = {"state": "waiting_for_target_mb", "button_message_id": msg.id}
-        q.answer("أرسل الحجم بالـ MB")
-    elif data.startswith("crf_"):
-        if msg.id in user_video_data:
-            user_video_data[msg.id]['quality'] = data
-            compression_executor.submit(process_video_for_compression, user_video_data[msg.id])
-    elif data == "finish_process":
-        if msg.id in user_video_data:
-            if os.path.exists(user_video_data[msg.id]['file']): os.remove(user_video_data[msg.id]['file'])
-            del user_video_data[msg.id]
-        msg.delete()
-    q.answer()
+        send_settings_menu(client, message.chat.id, user_id, message.id)
+    elif data == "settings_encoder":
+        kb = [[InlineKeyboardButton("H.264 (NVENC)", callback_data="set_encoder:h264_nvenc")],
+              [InlineKeyboardButton("H.264 (CPU)", callback_data="set_encoder:libx264")],
+              [InlineKeyboardButton("رجوع", callback_data="settings")]]
+        message.edit_text("إختر الترميز:", reply_markup=InlineKeyboardMarkup(kb))
+    elif data.startswith("set_encoder:"):
+        s['encoder'] = data.split(":")[1]
+        send_settings_menu(client, message.chat.id, user_id, message.id)
+    elif data == "close_settings": message.delete()
 
-def get_telegram_duration(m):
-    if m.video: return m.video.duration
-    if m.animation: return m.animation.duration
-    return 0
+    # أزرار الفيديو
+    elif message.id in user_video_data:
+        video_data = user_video_data[message.id]
+        if data == "target_percent_prompt":
+            user_states[user_id] = {"state": "waiting_for_manual_percent", "button_message_id": message.id}
+            callback_query.answer("أرسل النسبة مئوية الآن..")
+        elif data == "target_size_prompt":
+            user_states[user_id] = {"state": "waiting_for_target_size", "button_message_id": message.id}
+            callback_query.answer("أرسل الحجم بالميجا بايت..")
+        elif data.startswith("crf_"):
+            video_data['quality'] = data
+            compression_executor.submit(process_video_for_compression, video_data)
+        elif data in ["cancel_compression", "finish_process"]:
+            if video_data['file'] and os.path.exists(video_data['file']): os.remove(video_data['file'])
+            del user_video_data[message.id]
+            message.delete()
+    callback_query.answer()
 
 if __name__ == "__main__":
     cleanup_downloads()
