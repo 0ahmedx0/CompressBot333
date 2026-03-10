@@ -46,10 +46,8 @@ def update_progress_msg(current, total, client, message, action, start_time, kno
     now = time.time()
     msg_id = message.id
     
-    # --- تعديل جديد: استخدام الحجم الصحيح إذا فشل pyrogram في جلبه ---
     if total <= 0 and known_size > 0:
         total = known_size
-    # --- نهاية التعديل ---
 
     is_finished = (current >= total) if total > 0 else False
     
@@ -119,7 +117,7 @@ def get_video_info_and_thumb(file_path):
     thumb_path = None
 
     try:
-        cmd = f'ffprobe -v quiet -print_format json -show_format -show_streams "{file_path}"'
+        cmd = f'ffprobe -v quiet -print_format json -show_streams "{file_path}"'
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         data = json.loads(result.stdout)
         
@@ -127,10 +125,8 @@ def get_video_info_and_thumb(file_path):
             if stream.get('codec_type') == 'video':
                 width = int(stream.get('width', 0))
                 height = int(stream.get('height', 0))
+                duration = float(stream.get('duration', 0))
                 break
-        
-        if 'format' in data:
-            duration = float(data['format'].get('duration', 0))
         
         thumb_time = min(1.0, duration * 0.1) if duration > 0 else 1.0
         thumb_path = file_path + "_thumb.jpg"
@@ -249,9 +245,8 @@ def process_video_for_compression(video_data):
             quality_settings = f"-{quality_param} {quality_value} -preset {preset}"
             used_mode_text = f"🎥 الجودة (CRF/CQ): {quality_value}"
         
-        # تم إضافة -pix_fmt yuv420p هنا لضمان تشغيل الفيديو دون تحميل مزدوج
         common_ffmpeg_part = (
-            f'ffmpeg -y -i "{file_path}" -c:v {encoder} -pix_fmt yuv420p '
+            f'ffmpeg -y -i "{file_path}" -c:v {encoder} -pix_fmt {VIDEO_PIXEL_FORMAT} '
             f'-c:a {VIDEO_AUDIO_CODEC} -b:a {VIDEO_AUDIO_BITRATE} '
             f'-ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -map_metadata -1'
         )
@@ -291,7 +286,7 @@ def process_video_for_compression(video_data):
         upload_progress_msg = message.reply_text("📤 اكتمل الضغط! بدأ الرفع النهائي كفيديو...", quote=True)
         upload_start_time = time.time()
 
-        # استخراج الصورة المصغرة والمعلومات لضمان Streamable وتجنب التحميل المزدوج
+        # استخراج الصورة المصغرة والمعلومات لجعل الفيديو Streamable
         thumb_path, vid_duration, vid_width, vid_height = get_video_info_and_thumb(temp_compressed_filename)
 
         # الرفع باستخدام reply_video
@@ -317,7 +312,7 @@ def process_video_for_compression(video_data):
         print(f"[{thread_name}] Processing error: {e}")
         message.reply_text(f"❌ حدث خطأ أثناء المعالجة أو الرفع:\n`{str(e)[:150]}`", quote=True)
     finally:
-        # حذف الملفات المؤقتة والناتجة، مع الإبقاء على file_path (الأصلي) لتكرار المحاولة
+        # حذف الملفات المؤقتة فقط (لا نحذف file_path للسماح بتكرار العملية)
         if temp_compressed_filename and os.path.exists(temp_compressed_filename):
             os.remove(temp_compressed_filename)
         if thumb_path and os.path.exists(thumb_path):
@@ -341,7 +336,7 @@ def process_video_for_compression(video_data):
                 ])
                 app.edit_message_text(
                     chat_id=message.chat.id, message_id=button_message_id,
-                    text="✅ تمت المهمة بنجاح! يمكنك تجربة جودة أخرى لنفس الفيديو أو إنهاء المهمة:",
+                    text="✅ تمت المهمة بنجاح! للتحكم، يمكنك طلب تجربة جودة أخرى أم إنهاء العملية من هنا (سيتم حذف الملف الأصلي حينها):",
                     reply_markup=markup)
             except: pass
 
@@ -376,16 +371,18 @@ def handle_text_inputs(client, message):
     user_id = message.from_user.id
     if user_id not in user_states:
         return
-    
+        
     state_data = user_states[user_id]
     state = state_data.get("state")
-
+    
     if state == "waiting_for_target_size":
+        prompt_message_id = state_data.get("prompt_message_id")
         button_message_id = state_data.get("button_message_id")
         try:
             size = float(message.text)
             if size <= 0: raise ValueError
-            if button_message_id in user_video_data:
+            
+            if button_message_id and button_message_id in user_video_data:
                 video_data = user_video_data[button_message_id]
                 if not video_data.get('processing_started') and video_data.get('file'):
                     video_data['quality'] = {"target_size": size}
@@ -393,15 +390,18 @@ def handle_text_inputs(client, message):
                         app.edit_message_reply_markup(
                             chat_id=message.chat.id, message_id=button_message_id,
                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"🎯 طلب الوصول لـ ~{size} MB استلم", callback_data="none")]]))
-                    except: pass
+                    except Exception: pass
+                    
                     compression_executor.submit(process_video_for_compression, video_data)
-                    user_states.pop(user_id, None)
+                    # تنظيف الحالة لاستقبال مدخلات جديدة لاحقاً
+                    del user_states[user_id]
                 else:
-                    message.reply_text("❌ الفيديو ممسوح أو العملية قيد التنفيذ مسبقاً.", quote=True)
+                    message.reply_text("❌ انتهت صلاحية هذا الزر (الفيديو ممسوح أو العملية قيد التنفيذ مسبقاً).", quote=True)
             else:
                 message.reply_text("❌ بيانات الجلسة غير متوفرة. أرسل فيديو جديد.", quote=True)
+                
         except ValueError:
-            message.reply_text("❌ يرجى كتابة حجم الميغا رقمياً (مثال: 5.5).", quote=True)
+            message.reply_text("❌ القيمة المُرسلة خاطئة، يرجى كتابة حجم الميغا رقمياً وفقط (مثال: 5.5 أو 12).", quote=True)
         finally:
             try: message.delete()
             except: pass
@@ -409,12 +409,15 @@ def handle_text_inputs(client, message):
     elif state == "waiting_for_cq_value":
         try:
             val = int(message.text)
-            get_user_settings(user_id)['auto_quality_value'] = val
-            message.reply_text(f"✅ تم حفظ الجودة التلقائية: {val}")
-            user_states.pop(user_id, None)
-            send_settings_menu(client, message.chat.id, user_id)
+            if 0 <= val <= 51:
+                get_user_settings(user_id)['auto_quality_value'] = val
+                message.reply_text(f"✅ تم حفظ قيمة الجودة التلقائية لتكون: CRF {val}")
+                user_states.pop(user_id, None)
+                send_settings_menu(client, message.chat.id, user_id)
+            else:
+                message.reply_text("❌ يرجى إدخال رقم بين 0 و 51.")
         except:
-            message.reply_text("❌ أرسل رقم صحيح.")
+            message.reply_text("❌ يرجى إدخال رقم صحيح.")
 
 def send_settings_menu(client, chat_id, user_id, message_id=None):
     settings = get_user_settings(user_id)
@@ -442,9 +445,15 @@ def send_settings_menu(client, chat_id, user_id, message_id=None):
 @app.on_message(filters.video | filters.animation)
 def handle_incoming_video(client, message):
     file_id = message.video.file_id if message.video else message.animation.file_id
-    file_size = message.video.file_size if message.video else (message.animation.file_size if message.animation else 0)
+    
+    file_size = 0
+    if message.video and message.video.file_size:
+        file_size = message.video.file_size
+    elif message.animation and message.animation.file_size:
+        file_size = message.animation.file_size
 
     file_name_prefix = os.path.join(DOWNLOADS_DIR, f"{message.from_user.id}_{message.id}_{int(time.time())}.mp4")
+    
     download_msg = message.reply_text("📥 يتم إنشاء الاتصال لتنزيل الفيديو لخادم المعالجة...", quote=True)
     start_time = time.time()
     
@@ -515,6 +524,7 @@ def universal_callback_handler(client, callback_query):
     user_id = callback_query.from_user.id
     message = callback_query.message
 
+    # ---------------- إعدادات البوت ----------------
     if data.startswith("settings"):
         if data == "settings":
             send_settings_menu(client, message.chat.id, user_id, message.id)
@@ -536,6 +546,7 @@ def universal_callback_handler(client, callback_query):
         callback_query.answer()
         return
 
+    # ---------------- ضبط الـ encoder ----------------
     elif data.startswith("set_encoder:"):
         _, value = data.split(":", 1)
         get_user_settings(user_id)['encoder'] = value
@@ -543,6 +554,7 @@ def universal_callback_handler(client, callback_query):
         send_settings_menu(client, message.chat.id, user_id, message.id)
         return
 
+    # ---------------- إلغاء استقبال الرسائل ----------------
     elif data == "cancel_input":
         if user_id in user_states: del user_states[user_id]
         callback_query.answer("تم إلغاء حالة الاستقبال.")
@@ -553,9 +565,12 @@ def universal_callback_handler(client, callback_query):
         except: pass
         return
 
+    # ---------------- التحقق من الفيديو ----------------
     button_message_id = message.id
     if button_message_id not in user_video_data:
-        callback_query.answer("زر قديم جداً.", show_alert=True)
+        callback_query.answer("زر قديم جداً منتهي الصلاحية.", show_alert=True)
+        try: message.delete()
+        except: pass
         return
     
     video_data = user_video_data[button_message_id]
@@ -563,27 +578,46 @@ def universal_callback_handler(client, callback_query):
         callback_query.answer("طابور التنفيذ يعمل بالفعل للفيديو...", show_alert=True)
         return
 
+    # ---------------- إلغاء العملية والإنهاء ----------------
     if data in ["cancel_compression", "finish_process"]:
         if video_data.get('timer') and video_data['timer'].is_alive(): video_data['timer'].cancel()
         file_path = video_data.get('file')
+        # الآن نحذف الملف الأصلي هنا فقط
         if file_path and os.path.exists(file_path): 
-            os.remove(file_path) # حذف الملف عند إنهاء المهمة
-        try: message.delete()
-        except: pass
+            os.remove(file_path)
+            print(f"File Deleted on exit: {file_path}")
+        try:
+            message.delete()
+            video_data['message'].reply_text("🗑️ دُمر الطلب وأُزيل الملف الأصلي من الذاكرة بنجاح.", quote=True)
+        except Exception: pass
         if button_message_id in user_video_data: del user_video_data[button_message_id]
-        callback_query.answer("تم الإنهاء وحذف الملف الأصلي.")
         return
 
+    # ---------------- طلب الحجم المستهدف ----------------
     if data == "target_size_prompt":
-        user_states[user_id] = {"state": "waiting_for_target_size", "button_message_id": button_message_id}
-        message.reply_text("🔢 رجاءً أرسل الحجم المستهدف بالميغا بايت الآن.")
-        callback_query.answer()
+        if video_data.get('timer') and video_data['timer'].is_alive():
+            video_data['timer'].cancel()
+
+        prompt_msg = message.reply_text(
+            "🔢 رجاءً أرسل الحجم (المستهدف) رقماً بالميغا بايت في الدردشة الآن.\n"
+            "*(مثال: 5.5 أو 12)*",
+            quote=True
+        )
+
+        user_states[user_id] = {
+            "state": "waiting_for_target_size",
+            "prompt_message_id": prompt_msg.id,
+            "button_message_id": button_message_id
+        }
+        callback_query.answer("في الانتظار لكتابة الحجم...")
         return
 
     if video_data.get('timer') and video_data['timer'].is_alive(): video_data['timer'].cancel()
+
+    # ---------------- اختيار الجودة CRF مباشرة ----------------
     video_data['quality'] = data
+    callback_query.answer("في المعالجة... يرجى التمهل")
     compression_executor.submit(process_video_for_compression, video_data)
-    callback_query.answer("جاري البدء...")
 
 # -------------------------- التشغيل --------------------------
 if __name__ == "__main__":
