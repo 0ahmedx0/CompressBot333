@@ -34,14 +34,14 @@ user_finished_files = {}
 user_cleanup_messages = {}
 task_lock = threading.Lock()
 
-# الإعدادات الافتراضية
+# إعدادات البوت الافتراضية
 DEFAULT_SETTINGS = {
-    'encoder': 'h264_nvenc',
-    'auto_compress': False,
+    'encoder': 'hevc_nvenc',
+    'auto_compress': True,
     'auto_quality_value': 30,
+    'auto_mode': 'percent',         
     'auto_percent_value': 50,
-    'auto_mode': 'crf',
-    'auto_send_album': False
+    'auto_send_album': True     # إضافة الإعداد الجديد للرفع التلقائي
 }
 
 def get_user_settings(user_id):
