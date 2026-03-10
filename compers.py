@@ -31,8 +31,8 @@ DEFAULT_SETTINGS = {
     'encoder': 'h264_nvenc',
     'auto_compress': False,
     'auto_quality_value': 30,
-    'auto_percent_value': 50,    # النسبة المئوية الافتراضية 50%
-    'auto_mode': 'crf'           # وضع التلقائي (crf أو percent)
+    'auto_percent_value': 25,    # النسبة المئوية الافتراضية 50%
+    'auto_mode': 'percent'           # وضع التلقائي (crf أو percent)
 }
 
 def get_user_settings(user_id):
