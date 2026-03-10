@@ -20,7 +20,7 @@ if not os.path.exists(DOWNLOADS_DIR):
 
 # ---- التعديل رقم 1: المزامنة لـ 3 مهام كحد أقصى للتحميل و 3 للضغط ----
 download_executor = ThreadPoolExecutor(max_workers=3)
-compression_executor = ThreadPoolExecutor(max_workers=3)
+compression_executor = ThreadPoolExecutor(max_workers=5)
 
 # قواميس التخزين الأساسية
 user_states = {}
@@ -38,8 +38,8 @@ DEFAULT_SETTINGS = {
     'encoder': 'h264_nvenc',
     'auto_compress': False,
     'auto_quality_value': 30,
-    'auto_mode': 'crf',         # إضافة: يحدد إذا التلقائي هو CRF أو نسبة (percent)
-    'auto_percent_value': 50    # إضافة: النسبة التلقائية الافتراضية 50%
+    'auto_mode': 'percent',         # إضافة: يحدد إذا التلقائي هو CRF أو نسبة (percent)
+    'auto_percent_value': 30    # إضافة: النسبة التلقائية الافتراضية 50%
 }
 
 def get_user_settings(user_id):
