@@ -5,8 +5,8 @@ import threading
 import time
 import re
 import json
-import shutil
-import logging # تم إضافة مكتبة التسجيل الاحترافية
+import shutil # أُضيف لنسخ الملفات للألبوم
+import logging # ++ تمت الإضافة للتتبع المتقدم
 from concurrent.futures import ThreadPoolExecutor
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaVideo
@@ -16,12 +16,12 @@ from config import *
 
 # -------------------------- إعدادات التتبع والسجلات (Logging Configuration) --------------------------
 logging.basicConfig(
-    level=logging.INFO, # إظهار سجلات الحالات العادية، والأخطاء، والتحذيرات
+    level=logging.INFO, # إظهار سجلات الحالات العادية، والأخطاء
     format='%(asctime)s | %(levelname)-7s | [%(threadName)s] | %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
         logging.StreamHandler(), # طباعة السجلات في سطر أوامر السيرفر
-        logging.FileHandler("bot_activity.log", encoding='utf-8') # حفظ نسخة من السجل في ملف خارجي
+        logging.FileHandler("bot_activity.log", encoding='utf-8') # حفظ نسخة من السجل في ملف
     ]
 )
 logger = logging.getLogger(__name__)
@@ -30,24 +30,23 @@ logger = logging.getLogger(__name__)
 DOWNLOADS_DIR = "./downloads"
 if not os.path.exists(DOWNLOADS_DIR):
     os.makedirs(DOWNLOADS_DIR)
-    logger.info("تم إنشاء مجلد التحميلات الأساسي.")
 
 # التزامنية لـ 3 مهام كحد أقصى للتحميل و 3 للضغط
-download_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="DownloadThread")
-compression_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="CompressThread")
+download_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="Downloader")
+compression_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="Compressor")
 
 # قواميس التخزين الأساسية
 user_states = {}
 user_settings = {}
 user_video_data = {}
-PROGRESS_TRACKER = {}
+PROGRESS_TRACKER = {} # لتتبع وقت آخر تحديث لرسائل التقدم (تجنب الحظر FloodWait)
 
 # للإدارة والتخزين الخاص بالألبوم والمهام المتزامنة بالخلفية
-user_active_tasks = {}       
-user_finished_files = {}     
-task_lock = threading.Lock() 
+user_active_tasks = {}       # يحفظ عدد الفيديوهات الجاري معالجتها حالياً للمستخدم
+user_finished_files = {}     # يخزن مسارات الملفات التي اكتمل ضغطها لتكوين الألبوم
+task_lock = threading.Lock() # لمنع التداخل بين الملفات المتزامنة
 
-# إعدادات البوت الافتراضية
+# إعدادات البوت الافتراضية مدعمة بالنسبة المئوية التلقائية
 DEFAULT_SETTINGS = {
     'encoder': 'h264_nvenc',
     'auto_compress': False,
@@ -70,8 +69,8 @@ def check_and_prompt_album(user_id, client, chat_id):
             if user_active_tasks[user_id] <= 0:
                 user_active_tasks[user_id] = 0
                 files_ready = user_finished_files.get(user_id, [])
-                if len(files_ready) >= 1:
-                    logger.info(f"اكتملت جميع المهام للمستخدم [{user_id}]. جاهز للألبوم بإجمالي {len(files_ready)} ملفات.")
+                if len(files_ready) >= 1: # سواء فيديو واحد أو عدة فيديوهات
+                    logger.info(f"اكتملت جميع العمليات للمستخدم [{user_id}]. عدد الملفات الجاهزة: {len(files_ready)}")
                     markup = InlineKeyboardMarkup([
                         [InlineKeyboardButton("📦 إرسال النتيجة (تجميع للنهائي)", callback_data="send_batch_album")],
                         [InlineKeyboardButton("🗑️ مسح الذاكرة (إلغاء الكل)", callback_data="clear_batch_album")]
@@ -82,11 +81,11 @@ def check_and_prompt_album(user_id, client, chat_id):
                         reply_markup=markup
                     )
 
-# -------------------------- وظائف المساعدة وحساب الحجم والتقدم --------------------------
+# -------------------------- وظائف المساعدة وحساب الحجم والتقدم (نفس الأساس مع تعديلات حماية النسبة) --------------------------
 
 def update_progress_msg(current, total, client, message, action, start_time, known_size=0):
     """
-    تمت إضافة حماية الأرقام لتجنب ظهور النسب الفوق 100% في سجلات السيرفر أو البوت.
+    دالة موحدة لتحديث رسائل التقدم مع حماية الأرقام الوهمية (النسبة لا تتجاوز 100%)
     """
     now = time.time()
     msg_id = message.id
@@ -94,7 +93,7 @@ def update_progress_msg(current, total, client, message, action, start_time, kno
     if total <= 0 and known_size > 0:
         total = known_size
 
-    # حماية برمجية لمنع تجاوز القيمة الحالية للمجموع (مشكلة الـ 178% والمدة غير الصحيحة)
+    # حماية برمجية لمنع تخطي الرقم الحالي للمجموع
     if total > 0 and current > total:
         current = total
 
@@ -106,13 +105,13 @@ def update_progress_msg(current, total, client, message, action, start_time, kno
     PROGRESS_TRACKER[msg_id] = now
     
     percent = (current * 100 / total) if total > 0 else 0
-    percent = min(percent, 100.0) # قفل النسبة على 100 كحد أقصى
+    percent = min(percent, 100.0) # حماية أخيرة لضمان عدم تجاوز الـ 100%
 
     filled = int(percent / 10) if percent > 0 else 0
     if filled > 10: filled = 10
     bar = f"[{'█' * filled}{'░' * (10 - filled)}]"
     
-    # تحديد بدقة هل نحن نضغط (ثواني) أم ننزل (حجم ميجا) لتجنب 0.00 MB في السجلات
+    # تحديد بدقة نوع العمل (ثواني للمعالجة أم MB للتنزيل) لتجنب قيم 0.0MB في السجلات
     is_compressing = ("معالجة" in action or "ضغط" in action)
 
     if is_compressing:
@@ -123,6 +122,7 @@ def update_progress_msg(current, total, client, message, action, start_time, kno
         total_val = f"{total / (1024 * 1024):.2f} MB" if total > 0 else "??"
 
     elapsed = now - start_time
+    
     speed_text = ""
     console_speed = ""  
     eta_text = "غير معروف" if total <= 0 else "جاري الحساب..."
@@ -147,7 +147,6 @@ def update_progress_msg(current, total, client, message, action, start_time, kno
         f"⏱ **الوقت المتبقي:** `{eta_text}`"
     )
 
-    # التسجيل النظيف في سطر أوامر السيرفر باستخدام Logging
     clean_action = action.replace('*', '').replace('`', '').split('\n')[0].strip()
     console_log = f"[Task Msg:{msg_id}] {clean_action} | {percent:.1f}% | {curr_val} / {total_val} {console_speed}| المتبقي: {eta_text}"
     logger.info(console_log)
@@ -159,10 +158,15 @@ def update_progress_msg(current, total, client, message, action, start_time, kno
     except MessageNotModified:
         pass
     except Exception as e:
-        logger.error(f"[Task Msg:{msg_id}] تحديث رسالة التقدم فشل: {e}")
+        logger.debug(f"[Task Msg:{msg_id}] تحديث رسالة التقدم تعثر بسبب: {e}")
+        pass
         
 def get_video_info_and_thumb(file_path):
-    duration, width, height, thumb_path = 0.0, 0, 0, None
+    duration = 0.0
+    width = 0
+    height = 0
+    thumb_path = None
+
     try:
         cmd = f'ffprobe -v quiet -print_format json -show_streams "{file_path}"'
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -183,8 +187,10 @@ def get_video_info_and_thumb(file_path):
         
         if not os.path.exists(thumb_path):
             thumb_path = None
+            
     except Exception as e:
-        logger.warning(f"Error getting video info & thumb for {file_path}: {e}")
+        logger.warning(f"Error getting video info & thumb: {e}")
+        
     return thumb_path, duration, width, height
 
 def time_to_seconds(time_str):
@@ -208,29 +214,32 @@ def get_video_duration(file_path):
         data = json.loads(result.stdout)
         return float(data['format']['duration'])
     except Exception as e:
-        logger.error(f"Failed to extract exact duration using ffprobe: {e}")
+        logger.error(f"Failed extracting video duration from ffprobe: {e}")
         return 0
 
 def calculate_target_bitrate(target_size_mb, duration_seconds, audio_bitrate_kbps=128):
-    if duration_seconds <= 0: return 500
+    if duration_seconds <= 0:
+        return 500
     total_bitrate_kbps = (target_size_mb * 8192) / duration_seconds
     video_bitrate_kbps = int(total_bitrate_kbps - audio_bitrate_kbps)
     return max(50, video_bitrate_kbps)
 
 def cleanup_downloads():
-    logger.info("يتم تنظيف مجلد التحميلات وإزالة الملفات القديمة...")
+    logger.info("Cleaning up downloads directory...")
     for filename in os.listdir(DOWNLOADS_DIR):
         file_path = os.path.join(DOWNLOADS_DIR, filename)
         try:
             if os.path.isfile(file_path):
                 os.remove(file_path)
+                logger.info(f"Deleted old file: {file_path}")
         except Exception as e:
-            logger.error(f"Failed to delete old file {file_path}: {e}")
+            logger.error(f"Error deleting file {file_path}: {e}")
 
 # -------------------------- تهيئة العميل --------------------------
 app = Client("video_compressor_bot", api_id=API_ID, api_hash=API_HASH, bot_token=API_TOKEN)
 
 # -------------------------- وظائف المعالجة الأساسية (الضغط) --------------------------
+
 def process_video_for_compression(video_data):
     file_path = video_data['file']
     message = video_data['message']
@@ -244,15 +253,17 @@ def process_video_for_compression(video_data):
     if total_duration <= 0:
         total_duration = get_video_duration(file_path)
 
-    orig_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-    logger.info(f"بدأت مهمة معالجة لملف: {os.path.basename(file_path)} | الحجم: {orig_size_mb:.2f}MB | المدة: {total_duration}s")
+    orig_size_mb = os.path.getsize(file_path)/(1024*1024)
+    logger.info(f"Original file: {os.path.basename(file_path)} | Size: {orig_size_mb:.2f}MB | Duration: {total_duration}s")
 
     if button_message_id and button_message_id in user_video_data:
         user_video_data[button_message_id]['processing_started'] = True
         try:
+            status_text = f"⏳ تم وضع الفيديو في طابور المعالجة المتزامن..."
             app.edit_message_reply_markup(
-                chat_id=message.chat.id, message_id=button_message_id,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏳ تم وضع الفيديو في طابور المعالجة المتزامن...", callback_data="none")]])
+                chat_id=message.chat.id,
+                message_id=button_message_id,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(status_text, callback_data="none")]])
             )
         except: pass
 
@@ -261,7 +272,8 @@ def process_video_for_compression(video_data):
 
     try:
         if not os.path.exists(file_path):
-            raise FileNotFoundError("لم يتم العثور على الملف الأصلي للمعالجة.")
+            message.reply_text("❌ حدث خطأ: لم يتم العثور على الملف الأصلي للمعالجة.")
+            return
 
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir=DOWNLOADS_DIR) as temp_file:
             temp_compressed_filename = temp_file.name
@@ -271,11 +283,12 @@ def process_video_for_compression(video_data):
             try: audio_k = int(str(VIDEO_AUDIO_BITRATE).lower().replace('k', '').strip())
             except: audio_k = 128
             target_v_bitrate = calculate_target_bitrate(target_size_mb, total_duration, audio_k)
+            logger.info(f"Mode: EXACT SIZE. Target: {target_size_mb} MB | Target Video Bitrate: {target_v_bitrate}k")
             quality_settings = f"-b:v {target_v_bitrate}k -maxrate {target_v_bitrate}k -bufsize {target_v_bitrate*2}k -preset fast"
             used_mode_text = f"🎯 طلب حجم مستهدف (أو نسبة مئوية): ~{target_size_mb:.2f} MB"
-            logger.info(f"أسلوب المعالجة: حجم محدد. الهدف: {target_size_mb:.2f} MB | الفيديو بت ريت: {target_v_bitrate}k")
         else:
             quality_value = int(quality.split('_')[1]) if isinstance(quality, str) and 'crf_' in quality else int(quality)
+            logger.info(f"Mode: QUALITY (CRF/CQ). Level: {quality_value}")
             preset = "fast"
             if quality_value <= 18: preset = "slow"
             elif quality_value <= 23: preset = "medium"
@@ -283,7 +296,6 @@ def process_video_for_compression(video_data):
             quality_param = "cq" if "nvenc" in encoder else "crf"
             quality_settings = f"-{quality_param} {quality_value} -preset {preset}"
             used_mode_text = f"🎥 الجودة (CRF/CQ): {quality_value}"
-            logger.info(f"أسلوب المعالجة: الجودة (CRF/CQ). المستوى: {quality_value}")
         
         common_ffmpeg_part = (
             f'ffmpeg -y -i "{file_path}" -c:v {encoder} -pix_fmt {VIDEO_PIXEL_FORMAT} '
@@ -291,7 +303,7 @@ def process_video_for_compression(video_data):
             f'-ac {VIDEO_AUDIO_CHANNELS} -ar {VIDEO_AUDIO_SAMPLE_RATE} -map_metadata -1'
         )
         ffmpeg_command = f'{common_ffmpeg_part} {quality_settings} -movflags +faststart "{temp_compressed_filename}"'
-        logger.info(f"سطر أوامر FFmpeg: {ffmpeg_command}")
+        logger.debug(f"Executing: {ffmpeg_command}")
 
         progress_msg = message.reply_text("🔄 **بدأ ضغط الفيديو (متزامن)...**", quote=True)
         start_time = time.time()
@@ -305,22 +317,26 @@ def process_video_for_compression(video_data):
                     current_time_str = time_match.group(1)
                     current_time_sec = time_to_seconds(current_time_str)
                     update_progress_msg(
-                        current=current_time_sec, total=total_duration,
-                        client=app, message=progress_msg,
-                        action="⚙️ **جاري المعالجة والضغط...**", start_time=start_time
+                        current=current_time_sec,
+                        total=total_duration,
+                        client=app,
+                        message=progress_msg,
+                        action="⚙️ **جاري المعالجة والضغط...**",
+                        start_time=start_time
                     )
 
         process.wait()
         
         if process.returncode != 0:
-            raise Exception(f"FFmpeg process crashed with code {process.returncode}")
+            raise Exception("FFmpeg process crashed or failed.")
             
         try: progress_msg.delete()
         except: pass
 
         compressed_file_size_mb = os.path.getsize(temp_compressed_filename) / (1024 * 1024)
-        logger.info(f"اكتملت معالجة {os.path.basename(file_path)}. الحجم الجديد: {compressed_file_size_mb:.2f} MB")
+        logger.info(f"Compression Done! New Size: {compressed_file_size_mb:.2f} MB")
 
+        # حفظ الملف لاستخدامه لاحقاً في الألبوم (دون رفع فردي)
         try:
             album_copy_path = os.path.join(DOWNLOADS_DIR, f"album_file_{user_id}_{int(time.time()*100)}.mp4")
             shutil.copy2(temp_compressed_filename, album_copy_path)
@@ -328,10 +344,11 @@ def process_video_for_compression(video_data):
                 if user_id not in user_finished_files:
                     user_finished_files[user_id] = []
                 user_finished_files[user_id].append(album_copy_path)
-            logger.info(f"تم نسخ الملف المعالج للألبوم في المسار: {album_copy_path}")
+            logger.info(f"تم نقل الملف لسلة المهام المتزامنة باسم: {os.path.basename(album_copy_path)}")
         except Exception as ex:
-            logger.error(f"خطأ أثناء نسخ الملف لطابور الألبوم: {ex}", exc_info=True)
+            logger.error(f"Failed to copy file for album: {ex}", exc_info=True)
 
+        # رسالة تفيد بانتهاء هذا الفيديو بالذات بدلا من رفعه (لأنه ينتظر الألبوم)
         message.reply_text(
             f"✅ **اكتمل ضغط الملف وجاري حفظه للرفع النهائي...**\n\n"
             f"🔻 الحجم القديم: {orig_size_mb:.2f} MB\n"
@@ -341,10 +358,10 @@ def process_video_for_compression(video_data):
         )
         
     except Exception as e:
-        logger.error(f"حدث خطأ أثناء معالجة فيديو: {e}", exc_info=True)
+        logger.error(f"Processing error: {e}", exc_info=True)
         message.reply_text(f"❌ حدث خطأ أثناء المعالجة:\n`{str(e)[:150]}`", quote=True)
     finally:
-        # عملية التنظيف للمؤقتات
+        # حذف الملفات المؤقتة الخاصة بـ ffmpeg
         if temp_compressed_filename and os.path.exists(temp_compressed_filename):
             os.remove(temp_compressed_filename)
         if thumb_path and os.path.exists(thumb_path):
@@ -369,10 +386,11 @@ def process_video_for_compression(video_data):
                 ])
                 app.edit_message_text(
                     chat_id=message.chat.id, message_id=button_message_id,
-                    text="✅ تمت المهمة بنجاح! للتحكم، يمكنك طلب تجربة جودة أم إنهاء العملية من هنا:",
+                    text="✅ تمت المهمة بنجاح! للتحكم، يمكنك طلب تجربة جودة أو نسبة مئوية أخرى أم إنهاء العملية من هنا:",
                     reply_markup=markup)
             except: pass
 
+        # عند الانتهاء (سواء نجاح أو فشل) استدعِ فحص الألبوم وإرساله
         check_and_prompt_album(user_id, app, message.chat.id)
 
 
@@ -380,8 +398,8 @@ def auto_select_medium_quality(button_message_id):
     if button_message_id in user_video_data:
         video_data = user_video_data[button_message_id]
         if not video_data.get('processing_started'):
+            logger.info(f"الوقت انتهى، اختيار آلي لزر المتوسط للمتغير {button_message_id}")
             video_data['quality'] = "crf_23"
-            logger.info("تفعيل الخيار التلقائي لجودة متوسطة نظراً لانتهاء المهلة للمستخدم.")
             try:
                 app.edit_message_reply_markup(
                     chat_id=video_data['message'].chat.id, message_id=button_message_id,
@@ -390,9 +408,10 @@ def auto_select_medium_quality(button_message_id):
             compression_executor.submit(process_video_for_compression, video_data)
 
 # -------------------------- معالجات رسائل تيليجرام (استقبال وأزرار) --------------------------
+
 @app.on_message(filters.command("start"))
 def start_command(client, message):
-    logger.info(f"المستخدم {message.from_user.id} قام بإرسال أمر /start")
+    logger.info(f"طلب /start من المستخدم {message.from_user.id}")
     settings_button = InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ الإعدادات", callback_data="settings")]])
     message.reply_text(
         "👋 أهلاً بك! أرسل لي فيديوهات (ويمكنك إرسال مجموعة معاً للضغط المتزامن 3/3).\nسيتم تجميعها وإرسالها لك في ألبوم بعد الانتهاء.",
@@ -401,7 +420,7 @@ def start_command(client, message):
 
 @app.on_message(filters.command("settings"))
 def settings_command(client, message):
-    logger.info(f"المستخدم {message.from_user.id} قام بفتح قائمة الإعدادات")
+    logger.info(f"فتح الإعدادات للمستخدم {message.from_user.id}")
     send_settings_menu(client, message.chat.id, message.from_user.id)
 
 @app.on_message(filters.text)
@@ -419,7 +438,7 @@ def handle_text_inputs(client, message):
         try:
             size = float(message.text)
             if size <= 0: raise ValueError
-            logger.info(f"المستخدم {user_id} أدخل حجم مستهدف: {size} MB")
+            logger.info(f"أدخل المستخدم حجم مستهدف: {size}")
             
             if button_message_id and button_message_id in user_video_data:
                 video_data = user_video_data[button_message_id]
@@ -430,6 +449,7 @@ def handle_text_inputs(client, message):
                             chat_id=message.chat.id, message_id=button_message_id,
                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"🎯 طلب الوصول لـ ~{size} MB استلم", callback_data="none")]]))
                     except Exception: pass
+                    
                     compression_executor.submit(process_video_for_compression, video_data)
                     del user_states[user_id]
                 else:
@@ -446,8 +466,8 @@ def handle_text_inputs(client, message):
         try:
             pct = float(message.text)
             if not (1 <= pct <= 100): raise ValueError
-            logger.info(f"المستخدم {user_id} طلب ضغط بنسبة مئوية: {pct}%")
-            
+            logger.info(f"أدخل المستخدم نسبة الضغط: {pct}%")
+
             if button_message_id and button_message_id in user_video_data:
                 video_data = user_video_data[button_message_id]
                 if not video_data.get('processing_started') and video_data.get('file'):
@@ -458,6 +478,7 @@ def handle_text_inputs(client, message):
                         app.edit_message_reply_markup(chat_id=message.chat.id, message_id=button_message_id,
                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"📉 معالجة نسبة {pct}%", callback_data="none")]]))
                     except Exception: pass
+                    
                     compression_executor.submit(process_video_for_compression, video_data)
                     del user_states[user_id]
             else: message.reply_text("❌ انتهت صلاحية الزر.", quote=True)
@@ -465,25 +486,27 @@ def handle_text_inputs(client, message):
         finally:
             try: message.delete()
             except: pass
-    # (...باقي خيارات النصوص تركيزها يشابه الأصل...)
+
     elif state == "waiting_for_cq_value":
         try:
             val = int(message.text)
             if 0 <= val <= 51:
                 get_user_settings(user_id)['auto_quality_value'] = val
-                logger.info(f"تم تحديث جودة التلقائي لـ {user_id} إلى CRF {val}")
+                logger.info(f"تم تعيين جودة CRF الآلية للمستخدم {user_id} لتكون {val}")
                 message.reply_text(f"✅ تم حفظ قيمة الجودة التلقائية: CRF {val}")
                 user_states.pop(user_id, None)
                 send_settings_menu(client, message.chat.id, user_id)
-            else: message.reply_text("❌ يرجى إدخال رقم بين 0 و 51.")
-        except: message.reply_text("❌ يرجى إدخال رقم صحيح.")
+            else:
+                message.reply_text("❌ يرجى إدخال رقم بين 0 و 51.")
+        except:
+            message.reply_text("❌ يرجى إدخال رقم صحيح.")
 
     elif state == "waiting_for_auto_percentage":
         try:
             val = float(message.text)
             if 1 <= val <= 100:
                 get_user_settings(user_id)['auto_percent_value'] = val
-                logger.info(f"تم تحديث نسبة التلقائي لـ {user_id} إلى {val}%")
+                logger.info(f"تم تعيين نسبة % الآلية للمستخدم {user_id} لتكون {val}")
                 message.reply_text(f"✅ تم حفظ نسبة التلقائي بنجاح: {val}%")
                 user_states.pop(user_id, None)
                 send_settings_menu(client, message.chat.id, user_id)
@@ -512,10 +535,12 @@ def send_settings_menu(client, chat_id, user_id, message_id=None):
         [InlineKeyboardButton(f"وضع الضغط التلقائي: {auto_compress_text}", callback_data="settings_toggle_auto")],
         [InlineKeyboardButton("✖️ إغلاق اللوحة", callback_data="close_settings")]
     ]
+
     if message_id:
         try: client.edit_message_text(chat_id, message_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
         except: pass
-    else: client.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        client.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 def post_download_actions(original_message_id):
@@ -528,12 +553,13 @@ def post_download_actions(original_message_id):
     try:
         file_path = video_data['download_future'].result()
         video_data['file'] = file_path
-        logger.info(f"تم بنجاح تحميل الملف برقم الرسالة {original_message_id} ومساره: {file_path}")
+        
         try: download_msg.delete()
         except: pass
         
         user_prefs = get_user_settings(user_id)
         if user_prefs['auto_compress']:
+            logger.info(f"تشغيل الوضع الآلي للرسالة {original_message_id}")
             if user_prefs.get('auto_mode') == 'percent':
                 orig_size_mb = os.path.getsize(file_path) / (1024 * 1024)
                 pct_value = user_prefs.get('auto_percent_value', 50)
@@ -563,7 +589,7 @@ def post_download_actions(original_message_id):
             timer.start()
             
     except Exception as e:
-        logger.error(f"انقطاع أو فشل التحميل للملف: {e}", exc_info=True)
+        logger.error(f"خطأ أثناء استلام وبدء التعامل مع الفيديو {original_message_id}: {e}", exc_info=True)
         message.reply_text(f"❌ وقع خطأ مقاطع أثناء التحميل:\n`{e}`")
         if original_message_id in user_video_data: del user_video_data[original_message_id]
         check_and_prompt_album(user_id, app, message.chat.id)
@@ -572,20 +598,24 @@ def post_download_actions(original_message_id):
 @app.on_message(filters.video | filters.animation)
 def handle_incoming_video(client, message):
     user_id = message.from_user.id
-    file_size = message.video.file_size if message.video else message.animation.file_size
-    file_id = message.video.file_id if message.video else message.animation.file_id
-    logger.info(f"تم استقبال فيديو من المستخدم {user_id}. إجمالي الحجم الوارد: {file_size / (1024*1024):.2f} MB")
+    logger.info(f"تم استقبال طلب تحميل ومعالجة من المستخدم [{user_id}] - {message.id}")
 
     with task_lock:
         user_active_tasks[user_id] = user_active_tasks.get(user_id, 0) + 1
 
+    file_id = message.video.file_id if message.video else message.animation.file_id
+    file_size = message.video.file_size if message.video else message.animation.file_size
     file_name_prefix = os.path.join(DOWNLOADS_DIR, f"{user_id}_{message.id}_{int(time.time())}.mp4")
+    
     download_msg = message.reply_text("📥 في طابور التنزيل...", quote=True)
     start_time = time.time()
     
     download_future = download_executor.submit(
-        client.download_media, message=file_id, file_name=file_name_prefix,
-        progress=update_progress_msg, progress_args=(client, download_msg, "📥 **جاري التنزيل الخ...**", start_time, file_size)
+        client.download_media,
+        message=file_id,
+        file_name=file_name_prefix,
+        progress=update_progress_msg,
+        progress_args=(client, download_msg, "📥 **جاري تنزيل الملف الخ...**", start_time, file_size)
     )
 
     user_video_data[message.id] = {
@@ -595,14 +625,13 @@ def handle_incoming_video(client, message):
     }    
     threading.Thread(target=post_download_actions, args=[message.id]).start()
 
-
 @app.on_callback_query()
 def universal_callback_handler(client, callback_query):
     data = callback_query.data
     user_id = callback_query.from_user.id
     message = callback_query.message
 
-    logger.info(f"المستخدم {user_id} ضغط على الزر المخفي ببيانات: {data}")
+    logger.info(f"استلام Callback: {data} من المستخدم {user_id}")
 
     # ----- التحكم في إرسال الألبوم / النتيجة النهائية -----
     if data == "send_batch_album":
@@ -614,25 +643,27 @@ def universal_callback_handler(client, callback_query):
             callback_query.answer("📤 يتم الآن معالجة ورفع النتيجة، انتظر قليلاً...")
             
             media_group = []
-            logger.info(f"يبدأ البوت الآن رفع {len(files_to_send[:10])} كألبوم للمستخدم.")
-            
+            logger.info(f"إرسال الألبوم الخاص بالمستخدم {user_id} والذي يحتوي على {len(files_to_send[:10])} مقاطع")
             for f_path in files_to_send[:10]:
                 thumb, dur, w, h = get_video_info_and_thumb(f_path)
                 media_group.append(InputMediaVideo(f_path, thumb=thumb, duration=int(dur), width=w, height=h))
             
             try:
+                # إذا كان فيديو واحد، تيليجرام لا يقبله في دالة الألبوم، لذلك نرفعه كفيديو منفصل
                 if len(media_group) == 1:
                     f_path = files_to_send[0]
                     thumb, dur, w, h = get_video_info_and_thumb(f_path)
                     client.send_video(
-                        chat_id=message.chat.id, video=f_path, caption="📦 النتيجة النهائية للملف.",
+                        chat_id=message.chat.id,
+                        video=f_path,
+                        caption="📦 النتيجة النهائية للملف.",
                         duration=int(dur), width=w, height=h, thumb=thumb, supports_streaming=True
                     )
                 else:
                     client.send_media_group(chat_id=message.chat.id, media=media_group)
-                logger.info(f"تم رفع النتيجة بنجاح للمستخدم [{user_id}]")
+                logger.info(f"تم إرسال الملفات بنجاح للمستخدم {user_id}")
             except Exception as e:
-                logger.error(f"خطأ أثناء رفع النتيجة كألبوم: {e}", exc_info=True)
+                logger.error(f"خطأ أثناء رفع وإرسال الألبوم: {e}")
                 client.send_message(message.chat.id, f"❌ خطأ أثناء الرفع: {e}")
             finally:
                 for f_path in files_to_send:
@@ -645,16 +676,16 @@ def universal_callback_handler(client, callback_query):
     elif data == "clear_batch_album":
         with task_lock:
             files_to_send = user_finished_files.get(user_id, [])
+            logger.info(f"المستخدم {user_id} طلب تنظيف وحذف ألبومه")
             for f_path in files_to_send:
                 if os.path.exists(f_path): os.remove(f_path)
             user_finished_files[user_id] = []
-        logger.info(f"المستخدم {user_id} قام بتنظيف سلة الملفات يدوياً.")
         callback_query.answer("🗑 تم تنظيف ذاكرة الملفات بنجاح.")
         try: message.delete()
         except: pass
         return
 
-    # ---------------- إعدادات البوت ----------------
+    # ---------------- إعدادات البوت الأصلية ----------------
     if data.startswith("settings"):
         if data == "settings":
             send_settings_menu(client, message.chat.id, user_id, message.id)
@@ -688,6 +719,7 @@ def universal_callback_handler(client, callback_query):
     elif data.startswith("set_encoder:"):
         _, value = data.split(":", 1)
         get_user_settings(user_id)['encoder'] = value
+        logger.info(f"تم تغيير المحرك للمستخدم {user_id} إلى {value}")
         callback_query.answer(f"سُجل. التفضيل صار لـ: {value}")
         send_settings_menu(client, message.chat.id, user_id, message.id)
         return
@@ -715,9 +747,9 @@ def universal_callback_handler(client, callback_query):
         return
 
     if data in ["cancel_compression", "finish_process"]:
-        logger.info(f"المستخدم {user_id} ألغى معالجة رسالة الزر: {button_message_id}")
         if video_data.get('timer') and video_data['timer'].is_alive(): video_data['timer'].cancel()
         file_path = video_data.get('file')
+        logger.info(f"قام المستخدم {user_id} بإلغاء المهام للزر {button_message_id}")
         if file_path and os.path.exists(file_path): 
             os.remove(file_path)
         try:
@@ -745,12 +777,11 @@ def universal_callback_handler(client, callback_query):
 
     if video_data.get('timer') and video_data['timer'].is_alive(): video_data['timer'].cancel()
     video_data['quality'] = data
+    logger.info(f"يبدأ المستخدم {user_id} طلب المعالجة باختيار: {data}")
     callback_query.answer("في المعالجة... يرجى التمهل")
-    logger.info(f"تقديم بيانات {button_message_id} للمعالجة بجودة {data}")
     compression_executor.submit(process_video_for_compression, video_data)
 
 if __name__ == "__main__":
-    logger.info("تمهيد النظام...")
     cleanup_downloads()
-    logger.info("✅ البوت يعمل بنجاح، طوابير المعالجة والتنزيل وميزات التسجيل مفعلة بالكامل...")
+    logger.info("✅ البوت تم تجهيزه. المزامنة والسجلات مستمرة بنجاح...")
     app.run()
